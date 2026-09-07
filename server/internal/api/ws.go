@@ -22,6 +22,7 @@ type Hub struct {
 type wsConn struct {
 	send chan []byte
 	done chan struct{}
+	conn *websocket.Conn // underlying socket (closed on Kick)
 }
 
 // NewHub creates an empty hub.
@@ -33,8 +34,8 @@ func NewHub() *Hub {
 }
 
 // Subscribe registers a connection for a circle.
-func (h *Hub) Subscribe(circleID, deviceID string) *wsConn {
-	c := &wsConn{send: make(chan []byte, 256), done: make(chan struct{})}
+func (h *Hub) Subscribe(circleID, deviceID string, conn *websocket.Conn) *wsConn {
+	c := &wsConn{send: make(chan []byte, 256), done: make(chan struct{}), conn: conn}
 	h.mu.Lock()
 	if h.subs[circleID] == nil {
 		h.subs[circleID] = map[*wsConn]struct{}{}
@@ -64,6 +65,10 @@ func (h *Hub) Unsubscribe(circleID string, c *wsConn) {
 // Kick closes every live socket of deviceID in circleID. Called when a
 // member is removed or leaves, so a revoked member cannot keep receiving
 // the circle's location stream.
+//
+// The socket itself is closed, not just unsubscribed: the reader loop is
+// blocked in wsjson.Read (up to 90s) and would otherwise hold the
+// connection — and the kicked client would never learn it lost access.
 func (h *Hub) Kick(circleID, deviceID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -72,6 +77,10 @@ func (h *Hub) Kick(circleID, deviceID string) {
 			delete(h.subs[circleID], c)
 			delete(h.device, c)
 			close(c.done)
+			// Close unblocks the reader and writer goroutines; both treat
+			// the error as "leave". Safe to call concurrently with the
+			// handler's deferred Unsubscribe (map membership is already gone).
+			_ = c.conn.Close(websocket.StatusPolicyViolation, "removed from circle")
 		}
 	}
 	if len(h.subs[circleID]) == 0 {
@@ -109,7 +118,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn := s.hub.Subscribe(circleID, dev.ID)
+	conn := s.hub.Subscribe(circleID, dev.ID, c)
 	defer s.hub.Unsubscribe(circleID, conn)
 
 	// Writer goroutine: drains the queue to the socket.
@@ -131,11 +140,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader loop: consume client pings/pongs; detect dead sockets. The
-	// app pings every ~25s, so an idle-but-alive socket never trips the
-	// 90s deadline.
+	// Reader loop: consumes the app's keepalive messages and detects dead
+	// sockets. NB: in coder/websocket the read deadline is fixed per Read
+	// call and protocol pings do NOT reset it — only a completed Read does.
+	// The app therefore sends a small JSON keepalive every ~25s, so a
+	// healthy socket always re-arms the 90s window.
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), wsIdleTimeout)
 		var msg any
 		err := wsjson.Read(ctx, c, &msg)
 		cancel()
@@ -150,3 +161,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // jsonRaw wraps already-serialized JSON for wsjson (it re-marshals to the
 // same bytes since json.RawMessage passes through verbatim).
 func jsonRaw(b []byte) json.RawMessage { return json.RawMessage(b) }
+
+// wsIdleTimeout is how long a socket may go without a data message before
+// the server closes it. A var so tests can shrink the window; the app sends
+// a small JSON keepalive every ~25s, which completes a Read and re-arms it.
+var wsIdleTimeout = 90 * time.Second

@@ -338,7 +338,8 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	kind := q.Get("kind")
 	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
-	envs, err := s.store.Envelopes(circleID, since, kind, limit)
+	device := q.Get("device")
+	envs, err := s.store.Envelopes(circleID, since, kind, device, limit)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "query failed")
 		return
@@ -366,7 +367,16 @@ func (s *Server) handleLatestEnvelopes(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePutKeyBlob(w http.ResponseWriter, r *http.Request) {
 	circleID := r.PathValue("id")
 	dev := deviceFrom(r.Context())
-	if _, err := s.mustBeMember(w, circleID, dev.ID); err != nil {
+	m, err := s.mustBeMember(w, circleID, dev.ID)
+	if err != nil {
+		return
+	}
+	// Only the owner may write key blobs: the owner is the only member who
+	// holds the circle key, so any blob a non-owner writes would be garbage
+	// — and an owner-role check also stops a member from overwriting (and
+	// thus bricking) another member's blob with noise.
+	if m.Role != "owner" {
+		writeErr(w, http.StatusForbidden, "only the owner grants circle keys")
 		return
 	}
 	var req struct {
@@ -495,6 +505,15 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	// Revoke live access immediately: a removed member's open socket must
 	// not keep receiving the circle's location stream.
 	s.hub.Kick(circleID, did)
+	// An owner leaving would orphan the circle (no one left who can invite
+	// or kick); hand the role to the longest-standing member.
+	if m.Role == "owner" {
+		if next, err := s.store.OldestMember(circleID); err == nil && next != "" {
+			if err := s.store.TransferOwnership(circleID, next); err != nil {
+				slog.Warn("ownership transfer", "err", err, "circle", circleID)
+			}
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

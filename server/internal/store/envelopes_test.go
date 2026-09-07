@@ -34,7 +34,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		}
 	}
 	// limit > 1000 is clamped to 1000, not to 100.
-	envs, err := s.Envelopes("c1", 0, "", 5000)
+	envs, err := s.Envelopes("c1", 0, "", "", 5000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		t.Errorf("got %d envelopes, want 105 (limit must not shrink results below stored count)", len(envs))
 	}
 	// Explicit small limit works.
-	envs, err = s.Envelopes("c1", 0, "", 5)
+	envs, err = s.Envelopes("c1", 0, "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		t.Errorf("got %d envelopes, want 5", len(envs))
 	}
 	// since cursor excludes entries at or before the cursor (strict >).
-	envs, err = s.Envelopes("c1", 1050, "", 0)
+	envs, err = s.Envelopes("c1", 1050, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEnvelopeDedup(t *testing.T) {
 	if _, inserted, err := s.AddEnvelope(base); err != nil || inserted {
 		t.Fatalf("duplicate insert: inserted=%v err=%v (want ignored)", inserted, err)
 	}
-	envs, err := s.Envelopes("c1", 0, "", 10)
+	envs, err := s.Envelopes("c1", 0, "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestPruneRetention(t *testing.T) {
 	if n != 2 {
 		t.Errorf("pruned %d, want 2 (location+message; sos/crash kept)", n)
 	}
-	left, err := s.Envelopes("c1", 0, "", 10)
+	left, err := s.Envelopes("c1", 0, "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if _, _, err := s.AddEnvelope(want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Envelopes("c1", 0, "message", 10)
+	got, err := s.Envelopes("c1", 0, "message", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +153,77 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	}
 	if got[0].Ciphertext != want.Ciphertext || got[0].Nonce != want.Nonce || got[0].Kind != want.Kind {
 		t.Errorf("round trip mismatch: %+v", got[0])
+	}
+}
+
+func TestEnvelopeDeviceFilter(t *testing.T) {
+	s := openTestStore(t)
+	for _, d := range []string{"d1", "d2"} {
+		for i := 0; i < 3; i++ {
+			if _, _, err := s.AddEnvelope(Envelope{
+				ID:         "e-" + d + "-" + string(rune('0'+i)),
+				CircleID:   "c1",
+				DeviceID:   d,
+				Kind:       "location",
+				TS:         int64(100 + i),
+				Nonce:      "n-" + d + string(rune('0'+i)),
+				Ciphertext: "c",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	envs, err := s.Envelopes("c1", 0, "", "d2", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 3 {
+		t.Fatalf("got %d envelopes, want 3 (device filter)", len(envs))
+	}
+	for _, e := range envs {
+		if e.DeviceID != "d2" {
+			t.Errorf("device filter leaked envelope from %s", e.DeviceID)
+		}
+	}
+}
+
+func TestOwnershipTransfer(t *testing.T) {
+	s := openTestStore(t)
+	c := Circle{ID: "c1", Name: "t", Color: "#fff", OwnerDeviceID: "owner", InviteCode: "AAAAAA", CreatedAt: 1}
+	if err := s.CreateCircle(c, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Join order defines the successor: d1 joins before d2.
+	if err := s.AddMember("c1", "d1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddMember("c1", "d2", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Owner leaves, then the oldest remaining member inherits.
+	if err := s.RemoveMember("c1", "owner"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.OldestMember("c1")
+	if err != nil || next != "d1" {
+		t.Fatalf("oldest member = %q, err %v", next, err)
+	}
+	if err := s.TransferOwnership("c1", next); err != nil {
+		t.Fatal(err)
+	}
+	role, err := s.MemberRole("c1", "d1")
+	if err != nil || role != "owner" {
+		t.Errorf("role = %q, err %v; want owner", role, err)
+	}
+	// Empty circle: no successor, no error.
+	if err := s.RemoveMember("c1", "d1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveMember("c1", "d2"); err != nil {
+		t.Fatal(err)
+	}
+	if next, err := s.OldestMember("c1"); err != nil || next != "" {
+		t.Errorf("empty circle: next = %q, err %v", next, err)
 	}
 }
 

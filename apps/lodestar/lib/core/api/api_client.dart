@@ -178,12 +178,13 @@ class ApiClient {
     String circleId, {
     int since = 0,
     String? kind,
+    String? device,
     int limit = 200,
   }) async {
     final j = await _send(
       'GET',
       '/api/v1/circles/$circleId/envelopes',
-      query: {'since': '$since', 'kind': ?kind, 'limit': '$limit'},
+      query: {'since': '$since', 'kind': ?kind, 'device': ?device, 'limit': '$limit'},
     );
     return (j['envelopes'] as List<dynamic>)
         .map((e) => Envelope.fromJson(e as Map<String, dynamic>))
@@ -225,8 +226,10 @@ class ApiClient {
 
   /// Opens a live envelope stream for [circleId].
   ///
-  /// Pings every 25s so the server's 90s idle deadline never fires on a
-  /// healthy connection (prevents reconnect churn).
+  /// Keepalive: protocol-level pings alone are not enough — coder/websocket
+  /// (server) only re-arms its 90s read deadline when a *data* message
+  /// completes a read. So we also send a tiny JSON keepalive every 25s;
+  /// the server discards it. Both are cancelled when the stream closes.
   Stream<Envelope> liveStream(String circleId) {
     final wsBase = baseUrl.replaceFirst(RegExp(r'^http'), 'ws');
     final channel = IOWebSocketChannel.connect(
@@ -235,10 +238,31 @@ class ApiClient {
       pingInterval: const Duration(seconds: 25),
       connectTimeout: timeout,
     );
-    return channel.stream.map((raw) {
-      final j = jsonDecode(raw as String) as Map<String, dynamic>;
-      return Envelope.fromJson(j);
+    late final Timer keepalive;
+    keepalive = Timer.periodic(const Duration(seconds: 25), (_) {
+      try {
+        channel.sink.add(jsonEncode({'type': 'ping'}));
+      } catch (_) {
+        // Socket already gone (e.g. the subscription was cancelled, which
+        // does not fire handleDone) — stop pinging.
+        keepalive.cancel();
+      }
     });
+    return channel.stream
+        .map((raw) {
+          final j = jsonDecode(raw as String) as Map<String, dynamic>;
+          return Envelope.fromJson(j);
+        })
+        .handleError((Object _) {})
+        .transform(
+          StreamTransformer.fromHandlers(handleDone: (sink) {
+            // Errors were swallowed above, so done fires on both a clean
+            // close and a failed socket — cancel the keepalive either way.
+            keepalive.cancel();
+            channel.sink.close();
+            sink.close();
+          }),
+        );
   }
 }
 

@@ -416,6 +416,59 @@ func TestKeyBlobForNonMemberRejected(t *testing.T) {
 	}
 }
 
+func TestKeyWriteOwnerOnly(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	circleID := createCircle(t, s, aliceTok, "C")
+	// Bob joins as a plain member.
+	if resp, out := doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob join: %d (%v)", resp.StatusCode, out)
+	}
+	// Bob (member, not owner) must not be able to write a key blob — even
+	// for himself. The owner is the only holder of the circle key, so any
+	// member-writable blob would be garbage or a poisoning vector.
+	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/keys", bobTok, map[string]any{
+		"for_device": bobID(t, s, circleID, "Bob"), "ciphertext": "evil",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("member key write: got %d, want 403", resp.StatusCode)
+	}
+	// The owner can still write a blob for Bob.
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/keys", aliceTok, map[string]any{
+		"for_device": bobID(t, s, circleID, "Bob"), "ciphertext": "legit",
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("owner key write: got %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestOwnerLeaveTransfersOwnership(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	_, carolTok := register(t, s, "Carol")
+	circleID := createCircle(t, s, aliceTok, "C")
+	if resp, out := doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob join: %d (%v)", resp.StatusCode, out)
+	}
+	if resp, out := doJSON(t, s, "POST", "/api/v1/circles/join", carolTok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("carol join: %d (%v)", resp.StatusCode, out)
+	}
+
+	// Alice (owner) leaves; Bob joined first and must inherit.
+	resp, _ := doJSON(t, s, "DELETE", "/api/v1/circles/"+circleID+"/members/"+bobID(t, s, circleID, "Alice"), aliceTok, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("alice leave: %d", resp.StatusCode)
+	}
+
+	// The circle must not be orphaned: Bob (new owner) can create invites.
+	resp, out := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/invites", bobTok, map[string]any{"ttl_hours": 1})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("successor invite: got %d (%v), want 201 — circle is orphaned", resp.StatusCode, out)
+	}
+}
+
 func TestLocationKindThrottle(t *testing.T) {
 	s, _ := newTestServer(t)
 	_, tok := register(t, s, "Spammer")
@@ -516,6 +569,78 @@ func TestAdminTokenRequired(t *testing.T) {
 	resp, _ = doJSON(t, s, "GET", "/admin?token=s3cret", "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("right token: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWebSocketKeepaliveArmsIdleDeadline(t *testing.T) {
+	// Regression: coder/websocket's read deadline is fixed per Read call and
+	// protocol pings do NOT reset it. Only a completed data message re-arms
+	// the window, so the app must send a JSON keepalive. Prove it: with a
+	// 2s window, a keepalive-sending socket stays alive while a silent one
+	// is closed.
+	old := wsIdleTimeout
+	wsIdleTimeout = 2 * time.Second
+	defer func() { wsIdleTimeout = old }()
+
+	s, _ := newTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	_, carolTok := register(t, s, "Carol")
+	circleID := createCircle(t, s, aliceTok, "C")
+	for _, tok := range []string{bobTok, carolTok} {
+		if resp, out := doJSON(t, s, "POST", "/api/v1/circles/join", tok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)}); resp.StatusCode != http.StatusOK {
+			t.Fatalf("join: %d (%v)", resp.StatusCode, out)
+		}
+	}
+
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+	dial := func(token string) *websocket.Conn {
+		t.Helper()
+		url := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws?circle=" + circleID
+		c, _, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{
+			HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}},
+		})
+		if err != nil {
+			t.Fatalf("ws dial: %v", err)
+		}
+		return c
+	}
+	bob := dial(bobTok)
+	defer bob.Close(websocket.StatusNormalClosure, "done")
+	carol := dial(carolTok)
+	defer carol.Close(websocket.StatusNormalClosure, "done")
+	time.Sleep(100 * time.Millisecond) // let subscriptions land
+
+	// Phase 1 — no traffic at all for ~2.5s (past the 2s idle window).
+	// Bob sends data keepalives; Carol sends nothing. NB: keep the phase
+	// traffic-free — broadcasts would complete Carol's reads too and
+	// re-arm her deadline, hiding the bug this test guards against.
+	for i := 0; i < 6; i++ {
+		if err := wsjson.Write(context.Background(), bob, map[string]string{"type": "ping"}); err != nil {
+			t.Fatalf("bob keepalive %d: %v", i, err)
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	// Carol's silent socket must have been closed server-side.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var got map[string]any
+	if err := wsjson.Read(ctx, carol, &got); err == nil {
+		t.Fatal("silent socket still alive after idle deadline")
+	}
+
+	// Bob's keepalives completed reads, so his deadline is still far out:
+	// he must receive the post fine.
+	postEnvelope(t, s, aliceTok, circleID, "sos")
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	if err := wsjson.Read(ctx2, bob, &got); err != nil {
+		t.Fatalf("keepalive socket died despite pings: %v", err)
+	}
+	if got["kind"] != "sos" {
+		t.Errorf("bob got %v, want sos", got["kind"])
 	}
 }
 

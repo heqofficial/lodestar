@@ -53,17 +53,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
       if (sender != null) {
         // The server caps pages at 1000 envelopes; page backwards in time
         // (oldest page first) until we reach the start of the day.
+        // The server cursor is exclusive on ts, so rows sharing the page
+        // boundary's ts would be skipped forever: step back 1ms and dedupe
+        // by envelope id instead.
         var since = 0;
+        final seen = <String>{};
         while (true) {
           final envs = await state.api.getEnvelopes(
             circleId,
             since: since,
             kind: 'location',
+            device: member,
             limit: 1000,
           );
           if (envs.isEmpty) break;
+          // Server returns newest first; pageOldest drives the next cursor.
+          var pageOldest = envs.first.ts;
           for (final e in envs) {
-            if (e.deviceId != member || e.ts < dayStart || e.ts >= dayEnd) {
+            if (e.ts < pageOldest) pageOldest = e.ts;
+            if (!seen.add(e.id) || e.ts < dayStart || e.ts >= dayEnd) {
               continue;
             }
             final open = await state.crypto.openEnvelope(
@@ -80,9 +88,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             );
           }
-          final oldest = envs.map((e) => e.ts).reduce((a, b) => a < b ? a : b);
-          if (envs.length < 1000 || oldest <= dayStart) break;
-          since = oldest;
+          if (envs.length < 1000 || pageOldest <= dayStart) break;
+          since = pageOldest - 1;
         }
       }
       setState(() {

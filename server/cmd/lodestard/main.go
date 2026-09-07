@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -109,7 +108,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("shutdown", "err", err)
 	}
-	fmt.Println("bye")
 }
 
 // newHandler selects structured logging: JSON when LODESTAR_LOG_JSON=1,

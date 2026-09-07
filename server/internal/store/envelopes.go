@@ -65,8 +65,8 @@ func (s *Store) PruneEnvelopes(beforeMS int64) (int64, error) {
 }
 
 // Envelopes fetches envelopes for a circle, newest first, with optional
-// kind filter and "since" cursor (exclusive).
-func (s *Store) Envelopes(circleID string, sinceTS int64, kind string, limit int) ([]Envelope, error) {
+// kind and device filters and a "since" cursor (exclusive).
+func (s *Store) Envelopes(circleID string, sinceTS int64, kind, deviceID string, limit int) ([]Envelope, error) {
 	if limit > 1000 {
 		limit = 1000
 	}
@@ -83,6 +83,10 @@ func (s *Store) Envelopes(circleID string, sinceTS int64, kind string, limit int
 	if kind != "" {
 		q += ` AND kind = ?`
 		args = append(args, kind)
+	}
+	if deviceID != "" {
+		q += ` AND device_id = ?`
+		args = append(args, deviceID)
 	}
 	q += ` ORDER BY ts DESC LIMIT ?`
 	args = append(args, limit)

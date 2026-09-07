@@ -138,6 +138,31 @@ func (s *Store) AddMember(circleID, deviceID, avatarColor string) error {
 	return nil
 }
 
+// OldestMember returns the device id of the longest-standing member of a
+// circle (first joined), or "" if the circle has no members left.
+func (s *Store) OldestMember(circleID string) (string, error) {
+	var id string
+	err := s.db.QueryRow(`SELECT device_id FROM circle_members WHERE circle_id = ? ORDER BY joined_at LIMIT 1`,
+		circleID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("oldest member: %w", err)
+	}
+	return id, nil
+}
+
+// TransferOwnership promotes a member to owner.
+func (s *Store) TransferOwnership(circleID, deviceID string) error {
+	_, err := s.db.Exec(`UPDATE circle_members SET role = 'owner' WHERE circle_id = ? AND device_id = ?`,
+		circleID, deviceID)
+	if err != nil {
+		return fmt.Errorf("transfer ownership: %w", err)
+	}
+	return nil
+}
+
 // RemoveMember removes a device from a circle.
 func (s *Store) RemoveMember(circleID, deviceID string) error {
 	res, err := s.db.Exec(`DELETE FROM circle_members WHERE circle_id = ? AND device_id = ?`, circleID, deviceID)

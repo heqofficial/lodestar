@@ -92,6 +92,10 @@ class AppState extends ChangeNotifier {
   final Set<String> _seenIds = {};
   int _memberCount = 0; // last known member count of the active circle
 
+  /// Newest chat message ts per circle — cursor for catch-up after a socket
+  /// drop (reconnect would otherwise lose messages relayed while offline).
+  final Map<String, int> _lastChatTsByCircle = {};
+
   ApiClient get api {
     final a = _api;
     if (a == null) throw StateError('not registered');
@@ -331,8 +335,11 @@ class AppState extends ChangeNotifier {
     circles.add(c);
     hasCircleKey = false;
     await _db?.upsertCircle(c);
-    await _selectCircle(c.id);
+    // Membership (and with it the sender public keys) must be known BEFORE
+    // the circle state is loaded: _ingest silently drops envelopes whose
+    // sender it cannot identify, so the map would come up empty.
     await refreshCircle(c.id);
+    await _selectCircle(c.id);
     // Request the circle key from the owner.
     await _tryFetchCircleKey(c.id);
     notifyListeners();
@@ -493,6 +500,10 @@ class AppState extends ChangeNotifier {
         if (list.length > 500) {
           list.removeRange(0, list.length - 500);
         }
+        _lastChatTsByCircle[circleId] = max(
+          _lastChatTsByCircle[circleId] ?? 0,
+          ts,
+        );
       case 'checkin':
         events.insert(0, (
           deviceId: sender,
@@ -565,7 +576,8 @@ class AppState extends ChangeNotifier {
         });
         await _wsSub!.asFuture<void>().catchError((_) => null);
       } catch (_) {
-        // fallthrough to reconnect
+        // fallthrough to reconnect; the catch-up fetch below decides
+        // whether the server still accepts us (403 = membership revoked).
       }
       if (_disposed || activeCircleId != circleId) return;
       // Catch up on anything missed while the socket was down before
@@ -575,6 +587,23 @@ class AppState extends ChangeNotifier {
         for (final env in envs) {
           if (env.circleId == circleId) await _ingest(env);
         }
+        // Chat is not part of "latest per device": pull any messages
+        // relayed while we were disconnected.
+        final since = (_lastChatTsByCircle[circleId] ?? 0) - 1;
+        if (since >= 0) {
+          final msgs = await api.getEnvelopes(
+            circleId,
+            since: since,
+            kind: 'message',
+            limit: 500,
+          );
+          for (final env in msgs) {
+            if (env.circleId == circleId) await _ingest(env);
+          }
+        }
+      } on ApiException catch (e) {
+        // 403: membership revoked — stop the reconnect loop.
+        if (e.statusCode == 403) return;
       } catch (_) {
         // offline — reconnect and retry
       }
@@ -637,6 +666,9 @@ class AppState extends ChangeNotifier {
   void _onTrackerFix(Position fix) {
     _trips?.onPosition(fix);
     _crash?.onPosition(fix);
+    // Geofence evaluation must not depend on the network: a fix that fails
+    // to post (offline) still needs to produce enter/leave events locally.
+    _geofence?.onPosition(fix);
     unawaited(_shareFix(fix));
   }
 
@@ -704,11 +736,13 @@ class AppState extends ChangeNotifier {
         ciphertext: sealed.ciphertext,
       );
       await _db?.upsertEnvelope(env);
-      // On-device geofence evaluation happens on our own fixes.
-      _geofence?.onPosition(fix);
-      // Refresh place list occasionally (geofence engine snapshot).
+      // Refresh the geofence engine when the place set changes (compare
+      // ids, not just count — add+delete can keep the count identical).
+      final engineIds = _geofence?.places.map((p) => p.id).toSet() ?? {};
       if (places.isNotEmpty &&
-          (_geofence == null || _geofence!.places.length != places.length)) {
+          (_geofence == null ||
+              engineIds.length != places.length ||
+              !engineIds.containsAll(places.keys))) {
         _geofence = GeofenceEngine(
           places: places.values.toList(),
           onEvent: _onGeofenceEvent,

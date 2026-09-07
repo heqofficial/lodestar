@@ -46,7 +46,7 @@ Places live in the app, not the server. Each device compares its own fixes again
 
 ## Live updates & push
 
-- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app pings every 25 s (the server's idle deadline is 90 s), and after any disconnect it re-fetches `latest` so the map never misses a fix.
+- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app sends a small JSON keepalive every 25 s (protocol pings alone would NOT reset coder/websocket's per-read deadline — only a completed data read does) and after any disconnect it re-fetches `latest` plus missed chat, so the map and chat never miss a beat. Sockets are closed server-side within seconds of a member being removed.
 - **Immediate revocation** — removing a member closes their live socket server-side, so they stop receiving the circle stream the moment they're removed.
 
 ## Server hardening
