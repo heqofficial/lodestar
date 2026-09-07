@@ -8,25 +8,40 @@ Best for: maximum privacy, no recurring cost, you're comfortable with a Pi.
 
 ```bash
 # on the Pi (64-bit OS)
-mkdir -p ~/lodestar && cd ~/lodestar
-# copy the server binary (built for linux/arm64) or use Docker:
-#   docker run -d --name lodestar -p 8443:8443 -v ~/lodestar/data:/data ghcr.io/heqofficial/lodestar:latest
+git clone https://github.com/heqofficial/lodestar.git
+cd lodestar && docker compose up -d --build
 ```
 
-Connect from anywhere with [Tailscale](https://tailscale.com) (free):
+The image is built locally from source (there is no published registry image — building takes ~3 minutes the first time). Connect from anywhere with [Tailscale](https://tailscale.com) (free):
 
 ```bash
 tailscale up
 # Pi gets a stable address like 100.x.y.z — family phones reach
-# https://100.x.y.z:8443 without exposing any ports to the internet
+# http://100.x.y.z:8443 without exposing any ports to the internet
 ```
 
-## Option B — Free cloud VM ($0/mo)
+## Option B — Oracle Cloud free tier, step by step ($0/mo)
 
-- **Oracle Cloud** free tier: ARM VM, 4 OCPU / 24 GB RAM, free forever (the sweet spot for a family server that also runs ntfy + Home Assistant).
-- **Google Cloud** e2-micro free tier: enough for a small circle.
+The **Always Free** tier gives you a permanent ARM VM (up to 4 OCPU / 24 GB RAM) — the Lodestar server uses ~2% of it. The console steps below are the only manual part (account + one VM); everything after is a single paste.
 
-Same Docker command as above; open the firewall port only if you're not using Tailscale.
+1. **Sign up** at <https://signup.oraclecloud.com> (email, then a credit card for identity verification — you are not charged while you stay on free resources).
+2. In the console: **Compute → Instances → Create instance**.
+3. Name it `lodestar`. Under **Image and shape**: image **Ubuntu 24.04**, then **Change shape** → select **`VM.Standard.A1.Flex`** (it is marked *Always Free eligible*) → leave 4 OCPU / 24 GB RAM.
+4. Under **Networking**, keep the defaults; under **Add SSH keys** paste your public key (generate one: `ssh-keygen -t ed25519`).
+5. **Create**, wait ~1 minute for **Running**, then copy the instance's **public IP** from the instance page.
+6. **Open port 8443**: instance page → **VNIC → Security lists → default security list → Add Ingress Rules** → source `0.0.0.0/0`, destination port `8443` (TCP).
+7. SSH in and run the one-shot setup (installs Docker, builds the server, protects `/admin`, opens ufw, verifies health):
+
+```bash
+ssh ubuntu@<public-ip>
+bash <(curl -fsSL https://raw.githubusercontent.com/heqofficial/lodestar/main/deploy/oracle-setup.sh)
+```
+
+8. On each family phone: server URL `http://<public-ip>:8443`.
+
+Caveats: the card is never charged while you stay on free shapes; Oracle may reclaim *idle* free VMs after 7 days (a running Lodestar server is not idle — this realistically never applies).
+
+(Google Cloud's e2-micro free tier also works for a small circle: same `git clone && docker compose up -d --build` on a Debian image.)
 
 ## Option C — VPS (~$4/mo, best paid value)
 
@@ -35,8 +50,10 @@ Same Docker command as above; open the firewall port only if you're not using Ta
 ```bash
 apt update && apt install -y docker.io docker-compose-v2
 git clone https://github.com/heqofficial/lodestar.git
-cd lodestar && docker compose up -d
+cd lodestar && docker compose up -d --build
 ```
+
+(Or skip Docker entirely — the server is a single static binary: `go build ./server/cmd/lodestard` and run it under systemd.)
 
 Add a free Caddy reverse proxy for automatic HTTPS if you're exposing it publicly:
 
@@ -74,8 +91,10 @@ The server also enforces hard bounds so a single device can't bloat the DB: per-
 
 ## Upgrades & backups
 
+The image is built from source, so upgrading is: pull the new code and rebuild.
+
 ```bash
-docker compose pull && docker compose up -d   # upgrade
+git pull && docker compose up -d --build      # upgrade
 sqlite3 data/lodestar.db ".backup backup.db"  # backup (ciphertext only — keys never leave phones)
 ```
 
@@ -89,8 +108,8 @@ Restoring the DB restores envelopes (history); members' keys survive independent
 
 The release APK is built by CI on every push to `main`:
 
-1. Open **Actions → `Android (release APK)`** on the GitHub repo → latest run → **Artifacts → `lodestar-apk`** → download.
-2. Unzip `app-release.apk` and send it to the family (email, shared drive, or a link).
+1. Open **Actions → `Android (release APK)`** on the GitHub repo → latest run → **Artifacts → `lodestar-apk`** → download (a zip of three per-ABI APKs).
+2. Send the right one to each phone: `app-arm64-v8a-release.apk` for any phone from ~2018 onward (nearly all), `app-armeabi-v7a-release.apk` for old 32-bit phones, `app-x86_64-release.apk` for emulators. Each is ~19 MB instead of the 26 MB universal build.
 3. On each phone: open the APK → allow **"install unknown apps"** for your file manager / browser when prompted → install.
 4. First launch: allow **Notifications** (alerts) and, when starting background tracking, **Location** (Allow all the time) and **"Allow battery optimization exemption"** (the system dialog Lodestar shows — this is what keeps tracking alive on modern phones).
 

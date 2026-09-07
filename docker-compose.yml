@@ -9,11 +9,14 @@ services:
     ports:
       - "8443:8443"
     environment:
-      # LODESTAR_NTFY_URL: "http://ntfy:80"   # uncomment to enable push relay
-      # LODESTAR_NTFY_TOKEN: ""               # ntfy access token, if required
-      # LODESTAR_ADMIN_TOKEN: ""              # protects /admin
-      # LODESTAR_PUSH_KINDS: "sos,geofence,crash"
-      # LODESTAR_RETENTION_DAYS: "90"         # prune history older than N days (0 = keep forever)
+      # The Dockerfile's default CMD already sets -addr and -data; these
+      # env overrides come from a local .env file (see deploy/oracle-setup.sh):
+      #   LODESTAR_ADMIN_TOKEN=<random>   protects /admin (empty = open)
+      #   LODESTAR_NTFY_URL=http://host:port   enables the push relay
+      #   LODESTAR_NTFY_TOKEN=...
+      LODESTAR_ADMIN_TOKEN: ${LODESTAR_ADMIN_TOKEN:-}
+      LODESTAR_NTFY_URL: ${LODESTAR_NTFY_URL:-}
+      LODESTAR_NTFY_TOKEN: ${LODESTAR_NTFY_TOKEN:-}
     volumes:
       - ./data:/data
 

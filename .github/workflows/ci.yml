@@ -77,3 +77,15 @@ jobs:
             apps/lodestar/build/app/outputs/flutter-apk/app-x86_64-release.apk
           if-no-files-found: error
           retention-days: 30
+
+  docker:
+    name: Docker (server image build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The Dockerfile + compose are the documented deployment path; a
+      # build regression there must fail CI, not the family's server.
+      - name: Build server image
+        run: docker build -f server/Dockerfile -t lodestar:ci .
+      - name: Validate compose file
+        run: docker compose config -q
