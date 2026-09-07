@@ -30,6 +30,14 @@
 	<string>Lodestar shows your family where you are, when you choose to share. Your location is end-to-end encrypted.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>To keep your family safe, Lodestar can share your location in the background. It is end-to-end encrypted and you can pause sharing at any time.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- Allow plain-HTTP self-hosted servers on the local network
+		     (home server / Tailscale IP); internet hosts still require
+		     HTTPS, so this does not weaken ATS globally. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
