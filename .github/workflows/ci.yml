@@ -21,6 +21,8 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
+      - name: E2E (real binary)
+        run: go test -count=1 -v ./e2e/
 
   app:
     name: App (flutter analyze + test)

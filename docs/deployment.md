@@ -107,6 +107,16 @@ Android gets alerts through the ntfy app (step 7 below). iOS can receive them na
 
 The push is a wake-up signal with a title (e.g. "🚨 SOS from Alice"); the encrypted content itself is fetched from the server when the app opens — ciphertext never touches Apple's network.
 
+## Verify your build
+
+Before touching real phones, run the E2E suite — it builds the actual
+binary and drives the full protocol over the network (register → circle →
+join → envelopes → WebSocket relay → SOS push → kick → restart):
+
+```bash
+cd server && go test -v ./e2e/
+```
+
 ## Family rollout checklist
 
 1. [ ] Server up (any option above); test `curl http://host:8443/healthz` → `{"status":"ok"}` (this also probes the database — `503` means the store is wedged; Docker restarts it automatically via `HEALTHCHECK`)

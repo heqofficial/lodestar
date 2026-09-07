@@ -113,6 +113,23 @@ lib/screens/         onboarding, circles, map, places, history, chat, sos, setti
 
 SQLite by default (zero-config self-hosting); the store layer is behind an interface so Postgres can be added later without protocol changes.
 
+## Testing
+
+Three layers, all green in CI:
+
+1. **Unit tests** — `go test -race ./...` (server) and `flutter test` (app):
+   handlers, store queries, push payloads, crypto, trip/crash/geofence
+   detectors, local cache. The race detector has caught real bugs twice.
+2. **E2E (`server/e2e/`)** — `go test -v ./e2e/`: builds the real
+   `lodestard` binary and drives it over the network exactly like the app:
+   register → circle → invite/join → envelopes → WebSocket relay → push
+   fanout (against a local ntfy stub) → kick → restart persistence →
+   auth/skew guards → key blobs. On machines whose OS refuses to execute
+   freshly built binaries (e.g. Windows Smart App Control), the harness
+   boots the identical wiring in-process via `internal/run` instead.
+3. **Dogfooding** — the CI Android APK on real family phones; the layer
+   that finds the bugs the other two cannot.
+
 ## Deployment
 
 See [deployment.md](deployment.md). Docker Compose is the primary path; the server binary is CGO-free and runs anywhere Linux/ARM does.

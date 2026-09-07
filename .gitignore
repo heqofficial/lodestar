@@ -32,3 +32,4 @@ Thumbs.db
 *.p8
 .env
 .env.*
+/server/e2e/lodestard-e2e.exe
