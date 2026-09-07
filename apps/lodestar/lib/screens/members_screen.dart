@@ -36,13 +36,21 @@ class MembersScreen extends StatelessWidget {
       ),
     );
     if (confirmed == true) {
-      await state.grantCircleKeyTo(memberId);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('🔑 Key granted — they can now read the circle'),
-          ),
-        );
+      try {
+        await state.grantCircleKeyTo(memberId);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🔑 Key granted — they can now read the circle'),
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Key grant failed: $e')));
+        }
       }
     }
   }

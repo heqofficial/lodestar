@@ -46,15 +46,15 @@ Places live in the app, not the server. Each device compares its own fixes again
 
 ## Live updates & push
 
-- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app sends a small JSON keepalive every 25 s (protocol pings alone would NOT reset coder/websocket's per-read deadline — only a completed data read does) and after any disconnect it re-fetches `latest` plus missed chat, so the map and chat never miss a beat. Sockets are closed server-side within seconds of a member being removed.
+- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app sends a small JSON keepalive every 25 s (protocol pings alone would NOT reset coder/websocket's per-read deadline — only a completed data read does) and after any disconnect it re-fetches `latest` plus missed chat, so the map and chat never miss a beat. Reconnects back off exponentially (2→60 s) so a dead server can't burn battery; sockets are closed server-side within seconds of a member being removed, and each device is capped at 2 live sockets per circle so one member can't amplify broadcasts.
 - **Immediate revocation** — removing a member closes their live socket server-side, so they stop receiving the circle stream the moment they're removed.
 
 ## Server hardening
 
 - **Panic recovery** — a panicking handler becomes a 500; one bad request can never take down the server.
 - **Rate limits** — 120 req/min per device (global), 6 registrations/min per IP, and per-kind envelope throttles (30/min for `location`, 6/min for everything else) so a hostile member can't flood the DB. Limiter state is pruned when idle.
-- **Bounded storage** — 64 KiB envelope cap, exact-duplicate rejection (`circle, device, nonce` unique — retries are idempotent), and `LODESTAR_RETENTION_DAYS` pruning (default 90; `sos`/`crash` kept forever).
-- **Key-blob integrity** — key blobs may only be addressed to actual circle members.
+- **Bounded storage** — 64 KiB envelope cap, exact-duplicate rejection (`circle, device, nonce` unique — retries are idempotent and return the stored row), `LODESTAR_RETENTION_DAYS` pruning (default 90; `sos`/`crash` kept forever), and expired invite codes pruned with the same janitor.
+- **Key-blob integrity** — key blobs may only be addressed to actual circle members, only the owner writes them, and a removed member's blob is deleted on removal.
 - **Admin token** compared in constant time; control characters stripped from display names.
 - **ntfy (optional)** — the server can relay SOS/check-in/geofence events to a self-hosted ntfy topic per circle (payload is the encrypted envelope — safe to relay anywhere). Members can install the ntfy app and subscribe for push while Lodestar isn't running. iOS in-app APNs is roadmap.
 - **No Firebase, no Google Play Services dependency** for messaging.
@@ -83,7 +83,7 @@ cmd/lodestard/       entrypoint, config
 internal/api/        HTTP + WebSocket handlers, admin page
 internal/store/      SQLite (pure-Go modernc driver), schema, queries
 internal/push/       ntfy + APNs providers (APNs behind config)
-internal/relay/      WebSocket hub (fan-out per circle)
+internal/api/        WebSocket hub (fan-out per circle, kick, per-device cap)
 ```
 
 ### apps/lodestar/ (Flutter)

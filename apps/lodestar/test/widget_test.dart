@@ -208,6 +208,54 @@ void main() {
     });
   });
 
+  group('isSenderSpoof (attribution)', () {
+    test('signed sender must match the routed device id', () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      await alice.saveCircleKey('c1', await alice.newCircleKey());
+
+      final sealed = await alice.sealEnvelope(
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'sos',
+        ts: 1,
+        data: {'text': 'help'},
+      );
+      final open = await alice.openEnvelope(
+        circleId: 'c1',
+        nonceB64: sealed.nonce,
+        ciphertextB64: sealed.ciphertext,
+        senderPubEd25519B64: alice.ed25519PubB64,
+      );
+
+      // Relayed under Alice's own id: legit.
+      final legit = Envelope(
+        id: 'e1',
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'sos',
+        ts: 1,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+      );
+      expect(isSenderSpoof(legit, open), isFalse);
+
+      // The same signed payload relayed under Bob's id: spoof — the
+      // signature verifies against Alice's key, so only the cross-check
+      // of the inner sender against the routed device id catches it.
+      final spoofed = Envelope(
+        id: 'e2',
+        circleId: 'c1',
+        deviceId: 'bob-dev',
+        kind: 'sos',
+        ts: 1,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+      );
+      expect(isSenderSpoof(spoofed, open), isTrue);
+    });
+  });
+
   group('isStaleAlert (replay policy)', () {
     final now = 1_700_000_000_000;
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -17,6 +18,12 @@ type Hub struct {
 	subs   map[string]map[*wsConn]struct{}
 	device map[*wsConn]string // conn -> device id (for revocation kicks)
 }
+
+// maxConnsPerDevice caps how many live sockets one device may hold per
+// circle. Without a cap, a hostile member could open hundreds of sockets
+// and amplify every broadcast into hundreds of queued copies (each up to
+// 64 KiB), exhausting server memory.
+const maxConnsPerDevice = 2
 
 // wsConn is one live socket subscription.
 type wsConn struct {
@@ -33,16 +40,27 @@ func NewHub() *Hub {
 	}
 }
 
-// Subscribe registers a connection for a circle.
+// Subscribe registers a connection for a circle. Returns nil when the
+// device already holds the per-device socket cap (the caller should reject
+// the upgrade).
 func (h *Hub) Subscribe(circleID, deviceID string, conn *websocket.Conn) *wsConn {
 	c := &wsConn{send: make(chan []byte, 256), done: make(chan struct{}), conn: conn}
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for existing := range h.subs[circleID] {
+		if h.device[existing] == deviceID {
+			n++
+		}
+	}
+	if n >= maxConnsPerDevice {
+		return nil
+	}
 	if h.subs[circleID] == nil {
 		h.subs[circleID] = map[*wsConn]struct{}{}
 	}
 	h.subs[circleID][c] = struct{}{}
 	h.device[c] = deviceID
-	h.mu.Unlock()
 	return c
 }
 
@@ -71,20 +89,26 @@ func (h *Hub) Unsubscribe(circleID string, c *wsConn) {
 // connection — and the kicked client would never learn it lost access.
 func (h *Hub) Kick(circleID, deviceID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	var victims []*wsConn
 	for c := range h.subs[circleID] {
 		if h.device[c] == deviceID {
 			delete(h.subs[circleID], c)
 			delete(h.device, c)
 			close(c.done)
-			// Close unblocks the reader and writer goroutines; both treat
-			// the error as "leave". Safe to call concurrently with the
-			// handler's deferred Unsubscribe (map membership is already gone).
-			_ = c.conn.Close(websocket.StatusPolicyViolation, "removed from circle")
+			victims = append(victims, c)
 		}
 	}
 	if len(h.subs[circleID]) == 0 {
 		delete(h.subs, circleID)
+	}
+	h.mu.Unlock()
+	// Close outside the lock: it's a network op, and holding the hub lock
+	// would block every broadcast while a slow peer drains its close frame.
+	for _, c := range victims {
+		// Close unblocks the reader and writer goroutines; both treat
+		// the error as "leave". Safe to call concurrently with the
+		// handler's deferred Unsubscribe (map membership is already gone).
+		_ = c.conn.Close(websocket.StatusPolicyViolation, "removed from circle")
 	}
 }
 
@@ -119,12 +143,24 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := s.hub.Subscribe(circleID, dev.ID, c)
+	if conn == nil {
+		_ = c.Close(websocket.StatusPolicyViolation, "too many connections")
+		return
+	}
 	defer s.hub.Unsubscribe(circleID, conn)
 
-	// Writer goroutine: drains the queue to the socket.
+	// Writer goroutine: drains the queue to the socket. Recover is cheap
+	// insurance here: a panic in this goroutine would escape the request
+	// handler's recoverer (it runs on a different goroutine) and take the
+	// whole server process down with it.
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("ws writer panic", "err", rec, "circle", circleID, "device", dev.ID)
+			}
+		}()
 		for {
 			select {
 			case msg := <-conn.send:

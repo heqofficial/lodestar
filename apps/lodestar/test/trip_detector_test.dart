@@ -104,6 +104,33 @@ void main() {
       expect(summaries.single.hardBrakingCount, greaterThanOrEqualTo(1));
     });
 
+    test('NaN speed cannot start a trip or corrupt stats', () {
+      final summaries = <TripSummary>[];
+      final d = TripDetector(speedLimitKmh: 90, onTripEnded: summaries.add);
+      // Some platforms report NaN speed while the GPS warms up; the
+      // detector must ignore it, not start a trip or poison max speed.
+      d.onPosition(fix(40.0, -3.7, double.nan, 1000));
+      d.onPosition(fix(40.0, -3.7, double.nan, 2000));
+      expect(d.inTrip, isFalse);
+      expect(summaries, isEmpty);
+      // Normal fixes afterwards behave normally.
+      var t = 3000;
+      var lat = 40.0;
+      for (var i = 0; i < 10; i++) {
+        lat += 15.0 / 111320.0;
+        d.onPosition(fix(lat, -3.7, 15.0, t));
+        t += 1000;
+      }
+      expect(d.inTrip, isTrue);
+      t += 90 * 1000;
+      d.onPosition(fix(lat, -3.7, 0.0, t));
+      t += 90 * 1000;
+      d.onPosition(fix(lat, -3.7, 0.0, t));
+      expect(summaries, hasLength(1));
+      expect(summaries.single.maxSpeedKmh, greaterThan(40));
+      expect(summaries.single.maxSpeedKmh, lessThan(80));
+    });
+
     test('finish() ends an open trip with a summary', () {
       final summaries = <TripSummary>[];
       final d = TripDetector(speedLimitKmh: 90, onTripEnded: summaries.add);

@@ -16,12 +16,6 @@ type Device struct {
 	CreatedAt  int64  `json:"created_at"` // unix ms
 }
 
-var (
-	// ErrNotFound is returned when a row does not exist.
-	// ErrDuplicate is returned on unique-constraint violations.
-	ErrDuplicate = errors.New("duplicate")
-)
-
 // CreateDevice inserts a new device.
 func (s *Store) CreateDevice(d Device) error {
 	_, err := s.db.Exec(`INSERT INTO devices (id, name, ed25519_pub, x25519_pub, token_hash, created_at)

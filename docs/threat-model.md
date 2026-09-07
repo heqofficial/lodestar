@@ -35,7 +35,7 @@ The server sees: who is a member of which circle, when each device posts envelop
 - **Malicious member** can read everything in the circle (they have the key — they're family) and could post forged envelopes *as themselves*. Sender signatures prevent forging *as others*.
 - **Member removal is immediate**: a removed/left member's live WebSocket is closed server-side, so revocation takes effect instantly, not at their next read.
 - **Replay of old emergencies is rejected**: `sos`/`crash` envelopes older than 10 minutes (or more than 5 min in the future) are dropped on receipt, so even the server cannot re-alarm the circle with a stale alert. Routine kinds are not time-limited (history and late messages are legitimate).
-- **Server cannot poison key distribution**: key blobs may only be written for actual circle members, so a compromised member cannot overwrite another member's blob and brick their key fetch.
+- **Server cannot poison key distribution**: key blobs may only be written by the owner for actual circle members, so a compromised member cannot overwrite another member's blob and brick their key fetch; blobs are deleted when a member leaves.
 - **Exact replay is idempotent**: the same `(circle, device, nonce)` can only be stored once — retries after lost responses don't duplicate rows, and replayed envelopes aren't re-broadcast.
 
 ## 3. Transport

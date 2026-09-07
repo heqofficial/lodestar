@@ -120,20 +120,26 @@ func (s *Store) CirclesForDevice(deviceID string) ([]Circle, error) {
 }
 
 // AddMember joins a device to a circle. Idempotent for existing members;
-// rejects joins beyond the circle's member cap.
+// rejects joins beyond the circle's member cap. The cap check is part of
+// the INSERT itself, so two concurrent joins cannot both pass a count-then-
+// insert race and overflow the circle.
 func (s *Store) AddMember(circleID, deviceID, avatarColor string) error {
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM circle_members WHERE circle_id = ? AND device_id != ?`,
-		circleID, deviceID).Scan(&n); err != nil {
-		return fmt.Errorf("add member count: %w", err)
-	}
-	if n >= MaxMembers {
-		return ErrCircleFull
-	}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO circle_members (circle_id, device_id, role, avatar_color, sharing_enabled, joined_at)
-		VALUES (?, ?, 'member', ?, 1, ?)`, circleID, deviceID, avatarColor, nowMS())
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO circle_members (circle_id, device_id, role, avatar_color, sharing_enabled, joined_at)
+		SELECT ?, ?, 'member', ?, 1, ?
+		WHERE (SELECT COUNT(*) FROM circle_members WHERE circle_id = ? AND device_id != ?) < ?`,
+		circleID, deviceID, avatarColor, nowMS(), circleID, deviceID, MaxMembers)
 	if err != nil {
 		return fmt.Errorf("add member: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either the member already exists (idempotent re-join) or the
+		// circle is full — distinguish before rejecting.
+		var one int
+		if err := s.db.QueryRow(`SELECT 1 FROM circle_members WHERE circle_id = ? AND device_id = ?`,
+			circleID, deviceID).Scan(&one); err == nil {
+			return nil
+		}
+		return ErrCircleFull
 	}
 	return nil
 }
@@ -163,7 +169,9 @@ func (s *Store) TransferOwnership(circleID, deviceID string) error {
 	return nil
 }
 
-// RemoveMember removes a device from a circle.
+// RemoveMember removes a device from a circle. Their circle-key blob is
+// deleted too: a removed member must not have a blob sitting in the DB that
+// a later re-join (or a DB compromise) could resurrect.
 func (s *Store) RemoveMember(circleID, deviceID string) error {
 	res, err := s.db.Exec(`DELETE FROM circle_members WHERE circle_id = ? AND device_id = ?`, circleID, deviceID)
 	if err != nil {
@@ -171,6 +179,10 @@ func (s *Store) RemoveMember(circleID, deviceID string) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	_, err = s.db.Exec(`DELETE FROM key_blobs WHERE circle_id = ? AND device_id = ?`, circleID, deviceID)
+	if err != nil {
+		return fmt.Errorf("remove key blob: %w", err)
 	}
 	return nil
 }
@@ -244,6 +256,16 @@ func (s *Store) CreateInvite(i Invite) error {
 		return fmt.Errorf("create invite: %w", err)
 	}
 	return nil
+}
+
+// PruneInvites deletes expired invite codes.
+func (s *Store) PruneInvites(nowMS int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM invites WHERE expires_at < ?`, nowMS)
+	if err != nil {
+		return 0, fmt.Errorf("prune invites: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func boolToInt(b bool) int {

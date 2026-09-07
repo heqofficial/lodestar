@@ -37,7 +37,10 @@ type Envelope struct {
 
 // AddEnvelope stores an envelope and returns the stored copy. Duplicates
 // (same circle + device + nonce — e.g. a client retry after a lost response)
-// are ignored: returns (e, false) without inserting.
+// are ignored: returns (stored, false) WITHOUT inserting, and the returned
+// row is the one that was stored the first time — a retry must observe the
+// same id as the original broadcast, or client-side dedup would treat the
+// retry as a brand-new envelope.
 func (s *Store) AddEnvelope(e Envelope) (Envelope, bool, error) {
 	if e.CreatedAt == 0 {
 		e.CreatedAt = nowMS()
@@ -49,7 +52,27 @@ func (s *Store) AddEnvelope(e Envelope) (Envelope, bool, error) {
 		return Envelope{}, false, fmt.Errorf("add envelope: %w", err)
 	}
 	n, _ := res.RowsAffected()
-	return e, n > 0, nil
+	if n == 0 {
+		// Duplicate: return the stored row (original id, original ts).
+		stored, err := s.envelopeByNonce(e.CircleID, e.DeviceID, e.Nonce)
+		if err != nil {
+			return Envelope{}, false, err
+		}
+		return stored, false, nil
+	}
+	return e, true, nil
+}
+
+func (s *Store) envelopeByNonce(circleID, deviceID, nonce string) (Envelope, error) {
+	var e Envelope
+	err := s.db.QueryRow(`SELECT id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at
+		FROM envelopes WHERE circle_id = ? AND device_id = ? AND nonce = ?`,
+		circleID, deviceID, nonce).
+		Scan(&e.ID, &e.CircleID, &e.DeviceID, &e.Kind, &e.TS, &e.Nonce, &e.Ciphertext, &e.CreatedAt)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("dedup lookup: %w", err)
+	}
+	return e, nil
 }
 
 // PruneEnvelopes deletes envelopes older than beforeMS, except emergency
@@ -110,15 +133,14 @@ func (s *Store) Envelopes(circleID string, sinceTS int64, kind, deviceID string,
 
 // LatestPerDevice returns the most recent envelope of each kind for every
 // member of a circle — what the map screen needs to render instantly.
+// ROW_NUMBER keeps it tie-safe: two envelopes with the same ts for one
+// (device, kind) must not produce duplicate rows.
 func (s *Store) LatestPerDevice(circleID string) ([]Envelope, error) {
-	rows, err := s.db.Query(`SELECT e.id, e.circle_id, e.device_id, e.kind, e.ts, e.nonce, e.ciphertext, e.created_at
-		FROM envelopes e
-		JOIN (
-			SELECT device_id, kind, MAX(ts) AS mts
-			FROM envelopes WHERE circle_id = ?
-			GROUP BY device_id, kind
-		) m ON m.device_id = e.device_id AND m.kind = e.kind AND m.mts = e.ts
-		WHERE e.circle_id = ?`, circleID, circleID)
+	rows, err := s.db.Query(`SELECT id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at
+		FROM (
+			SELECT e.*, ROW_NUMBER() OVER (PARTITION BY device_id, kind ORDER BY ts DESC, id) AS rn
+			FROM envelopes e WHERE circle_id = ?
+		) WHERE rn = 1`, circleID)
 	if err != nil {
 		return nil, fmt.Errorf("latest per device: %w", err)
 	}

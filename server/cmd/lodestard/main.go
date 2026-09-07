@@ -120,8 +120,8 @@ func newHandler() slog.Handler {
 	return slog.NewTextHandler(os.Stderr, opts)
 }
 
-// runPrune removes envelopes older than the retention window; sos/crash
-// alerts are exempt (kept forever by the store).
+// runPrune removes envelopes older than the retention window (sos/crash
+// alerts are exempt, kept forever by the store) and expired invite codes.
 func runPrune(st *store.Store, days int) {
 	n, err := st.PruneEnvelopes(time.Now().AddDate(0, 0, -days).UnixMilli())
 	if err != nil {
@@ -129,9 +129,16 @@ func runPrune(st *store.Store, days int) {
 		return
 	}
 	if n > 0 {
-		slog.Info("pruned", "n", n, "days", days)
+		slog.Info("pruned envelopes", "n", n, "days", days)
+	}
+	if nInvites, err := st.PruneInvites(nowMS()); err != nil {
+		slog.Warn("prune invites", "err", err)
+	} else if nInvites > 0 {
+		slog.Info("pruned invites", "n", nInvites)
 	}
 }
+
+func nowMS() int64 { return time.Now().UnixMilli() }
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

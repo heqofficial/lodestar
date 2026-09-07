@@ -138,7 +138,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           child: Text(m.displayName),
                         ),
                     ],
-                    onChanged: (v) => setState(() => _memberId = v),
+                    onChanged: (v) {
+                      setState(() => _memberId = v);
+                      if (v != null) _load(state);
+                    },
                   ),
                 ),
                 const SizedBox(width: 8),

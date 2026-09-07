@@ -24,7 +24,6 @@ const (
 	maxEnvelopeSize  = 64 << 10 // 64 KiB of ciphertext per envelope
 	maxNameLen       = 64
 	maxCirclePerUser = 32
-	maxMembers       = 64
 
 	// Per-kind envelope throttles (per device, per circle): the app posts
 	// at most ~4 location fixes/min, so generous headroom still stops a
@@ -69,8 +68,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "dashboard missing")
 		return
 	}
-	devices, circles, members, _ := s.store.Counts()
-	envelopes, _ := s.store.EnvelopeCount()
+	devices, circles, members, err := s.store.Counts()
+	if err != nil {
+		slog.Warn("admin stats", "err", err)
+	}
+	envelopes, err := s.store.EnvelopeCount()
+	if err != nil {
+		slog.Warn("admin envelope count", "err", err)
+	}
 	stats := map[string]any{
 		"uptime_s":  int(time.Since(s.startedAt).Seconds()),
 		"devices":   devices,
@@ -281,7 +286,7 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "ts out of range")
 		return
 	}
-	if req.Nonce == "" || len(req.Ciphertext) > maxEnvelopeSize {
+	if req.Nonce == "" || req.Ciphertext == "" || len(req.Ciphertext) > maxEnvelopeSize {
 		writeErr(w, http.StatusBadRequest, "bad envelope body")
 		return
 	}
@@ -309,6 +314,7 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 	if s.pushKinds[req.Kind] && s.push != nil && s.push.Enabled() {
 		title := map[string]string{
 			"sos":      "🚨 SOS from " + dev.Name,
+			"crash":    "🚨 Possible crash from " + dev.Name,
 			"geofence": "📍 Geofence event",
 			"checkin":  "✅ Check-in from " + dev.Name,
 		}[req.Kind]

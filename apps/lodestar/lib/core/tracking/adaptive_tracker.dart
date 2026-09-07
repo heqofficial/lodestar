@@ -78,16 +78,23 @@ class AdaptiveTracker {
   void _handleFix(LocationData data) {
     if (_paused || data.latitude == null || data.longitude == null) return;
 
+    // Some platforms report NaN/-1 speed when it is unavailable; a NaN
+    // would poison trip math (max speed, deceleration) and break JSON
+    // encoding (jsonEncode throws on NaN), so normalize to 0.
+    final rawSpeed = data.speed ?? 0.0;
+    final speed = rawSpeed.isFinite && rawSpeed > 0
+        ? rawSpeed.clamp(0, 100).toDouble()
+        : 0.0;
+
     final fix = Position(
       lat: data.latitude!,
       lng: data.longitude!,
       accuracy: data.accuracy ?? 0,
-      speed: (data.speed ?? 0).clamp(0, 100),
+      speed: speed,
       ts: DateTime.now().millisecondsSinceEpoch,
     );
 
     // Switch sampling cadence based on movement.
-    final speed = fix.speed;
     final next = speed > 5.0
         ? Mode.drive
         : speed > 0.7

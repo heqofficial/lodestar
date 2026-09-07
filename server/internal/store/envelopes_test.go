@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *Store {
@@ -74,10 +75,15 @@ func TestEnvelopeDedup(t *testing.T) {
 		t.Fatalf("first insert: inserted=%v err=%v", inserted, err)
 	}
 	// Exact replay (same device+nonce, different id — a retry after a lost
-	// response) must not duplicate the row.
+	// response) must not duplicate the row, and must return the ORIGINAL
+	// stored row so the retry observes the same id as the first insert.
 	base.ID = "e2"
-	if _, inserted, err := s.AddEnvelope(base); err != nil || inserted {
+	stored, inserted, err := s.AddEnvelope(base)
+	if err != nil || inserted {
 		t.Fatalf("duplicate insert: inserted=%v err=%v (want ignored)", inserted, err)
+	}
+	if stored.ID != "e1" {
+		t.Errorf("duplicate returned id %q, want the stored id \"e1\"", stored.ID)
 	}
 	envs, err := s.Envelopes("c1", 0, "", "", 10)
 	if err != nil {
@@ -249,6 +255,80 @@ func TestCircleKeyBlobRoundTrip(t *testing.T) {
 	}
 	if _, err := s.KeyBlob("c1", "nobody"); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestRemoveMemberClearsKeyBlob(t *testing.T) {
+	s := openTestStore(t)
+	c := Circle{ID: "c1", Name: "t", Color: "#fff", OwnerDeviceID: "owner", InviteCode: "AAAAAA", CreatedAt: 1}
+	if err := s.CreateCircle(c, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddMember("c1", "d1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutKeyBlob("c1", "d1", "sealed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveMember("c1", "d1"); err != nil {
+		t.Fatal(err)
+	}
+	// The removed member's blob must be gone: a stale blob in the DB is a
+	// resurrection vector if the member ever rejoins or the DB leaks.
+	if _, err := s.KeyBlob("c1", "d1"); err != ErrNotFound {
+		t.Errorf("key blob survived removal: err=%v, want ErrNotFound", err)
+	}
+}
+
+func TestPruneInvites(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.CreateCircle(Circle{ID: "c1", Name: "t", Color: "#fff", OwnerDeviceID: "owner", InviteCode: "ZZZZ99", CreatedAt: now}, ""); err != nil {
+		t.Fatal(err)
+	}
+	err := s.CreateInvite(Invite{Code: "AAA111", CircleID: "c1", CreatedBy: "d1", ExpiresAt: now - 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.CreateInvite(Invite{Code: "BBB222", CircleID: "c1", CreatedBy: "d1", ExpiresAt: now + 60_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.PruneInvites(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("pruned %d invites, want 1", n)
+	}
+	if _, err := s.CircleByInvite("AAA111"); err != ErrNotFound {
+		t.Errorf("expired invite still joinable: %v", err)
+	}
+	if _, err := s.CircleByInvite("BBB222"); err != nil {
+		t.Errorf("live invite wrongly pruned: %v", err)
+	}
+}
+
+func TestLatestPerDeviceTieSafe(t *testing.T) {
+	s := openTestStore(t)
+	// Two envelopes for the same (device, kind) with the SAME ts, plus one
+	// other kind — the JOIN-on-MAX formulation would return both tied rows.
+	envs := []Envelope{
+		{ID: "a", CircleID: "c1", DeviceID: "d1", Kind: "location", TS: 100, Nonce: "n1", Ciphertext: "c"},
+		{ID: "b", CircleID: "c1", DeviceID: "d1", Kind: "location", TS: 100, Nonce: "n2", Ciphertext: "c"},
+		{ID: "c", CircleID: "c1", DeviceID: "d1", Kind: "checkin", TS: 200, Nonce: "n3", Ciphertext: "c"},
+	}
+	for _, e := range envs {
+		if _, _, err := s.AddEnvelope(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.LatestPerDevice("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("latest = %d rows, want 2 (one per kind, ties collapsed)", len(got))
 	}
 }
 

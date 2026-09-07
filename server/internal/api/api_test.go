@@ -497,20 +497,139 @@ func TestEnvelopeReplayIdempotent(t *testing.T) {
 		"kind": "checkin", "ts": time.Now().UnixMilli(),
 		"nonce": "replay-nonce", "ciphertext": "c2lnaHQ=",
 	}
-	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
+	resp, out := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("first post: %d", resp.StatusCode)
 	}
-	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
+	firstID := out["id"].(string)
+	resp, out = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("replay post: got %d, want 201 (idempotent)", resp.StatusCode)
 	}
-	resp, out := doJSON(t, s, "GET", "/api/v1/circles/"+circleID+"/envelopes", tok, nil)
+	// The retry must observe the SAME envelope id as the first post — a
+	// fresh id would break client-side dedup (the retry would look like a
+	// brand-new envelope) and diverge from the broadcast.
+	if out["id"] != firstID {
+		t.Errorf("replay returned id %v, want %v (must match the stored row)", out["id"], firstID)
+	}
+	resp, out = doJSON(t, s, "GET", "/api/v1/circles/"+circleID+"/envelopes", tok, nil)
 	envs := out["envelopes"].([]any)
 	if len(envs) != 1 {
 		t.Errorf("after replay: %d rows, want 1", len(envs))
 	}
 	_ = resp
+}
+
+func TestEmptyCiphertextRejected(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "C")
+	for _, body := range []map[string]any{
+		{"kind": "location", "ts": time.Now().UnixMilli(), "nonce": "n1", "ciphertext": ""},
+		{"kind": "location", "ts": time.Now().UnixMilli(), "nonce": "", "ciphertext": "c2lnaHQ="},
+	} {
+		resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("empty field: got %d, want 400", resp.StatusCode)
+		}
+	}
+}
+
+func TestWebSocketConnCap(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	circleID := createCircle(t, s, aliceTok, "C")
+
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+	url := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws?circle=" + circleID
+	dial := func() (*websocket.Conn, int) {
+		t.Helper()
+		c, resp, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{
+			HTTPHeader: http.Header{"Authorization": []string{"Bearer " + aliceTok}},
+		})
+		if err != nil {
+			return nil, resp.StatusCode
+		}
+		return c, resp.StatusCode
+	}
+
+	c1, _ := dial()
+	if c1 == nil {
+		t.Fatal("first socket rejected")
+	}
+	defer c1.Close(websocket.StatusNormalClosure, "done")
+	c2, _ := dial()
+	if c2 == nil {
+		t.Fatal("second socket rejected")
+	}
+	defer c2.Close(websocket.StatusNormalClosure, "done")
+
+	// Third socket from the same device must be closed immediately by the
+	// server: without this cap, one member could hold hundreds of sockets
+	// and turn every broadcast into a memory-amplifying fan-out. The
+	// upgrade itself succeeds (101), then the server closes with a policy
+	// violation frame.
+	c3, status := dial()
+	if c3 == nil {
+		t.Fatalf("third socket failed at handshake (status %d)", status)
+	}
+	defer c3.Close(websocket.StatusNormalClosure, "done")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var msg any
+	err := wsjson.Read(ctx, c3, &msg)
+	if err == nil {
+		t.Fatal("third socket still open — per-device cap not enforced")
+	}
+	if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+		t.Errorf("third socket close status = %d, want 1008 (policy violation)", got)
+	}
+}
+
+// recordingSender captures push titles so tests can assert what would have
+// been sent to ntfy/APNs.
+type recordingSender struct {
+	titles []string
+}
+
+func (r *recordingSender) Send(_ context.Context, req push.Request) error {
+	r.titles = append(r.titles, req.Title)
+	return nil
+}
+
+func TestCrashPushTitle(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rec := &recordingSender{}
+	// crash is in the default push kinds; the title map must cover it.
+	s := New(st, push.NewMulti(rec), "", []string{"sos", "crash", "geofence"})
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "C")
+
+	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+		"kind": "crash", "ts": time.Now().UnixMilli(), "nonce": "n", "ciphertext": "c2ln",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("crash post: %d", resp.StatusCode)
+	}
+	// Push fires in a goroutine — poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(rec.titles) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(rec.titles) != 1 {
+		t.Fatalf("push not sent (titles=%v)", rec.titles)
+	}
+	if !strings.Contains(rec.titles[0], "Alice") {
+		t.Errorf("crash push title = %q, want it to name the member", rec.titles[0])
+	}
 }
 
 func TestRegisterSanitizesControlChars(t *testing.T) {

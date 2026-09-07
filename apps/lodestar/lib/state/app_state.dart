@@ -28,6 +28,16 @@ bool isStaleAlert(String kind, int ts, int nowMs) {
   return age > 10 * 60 * 1000 || age < -5 * 60 * 1000;
 }
 
+/// Envelope attribution check: the signed inner sender must equal the
+/// server-routed device id. The inner sender is part of the sender's own
+/// signed plaintext, so without this cross-check a member could post an
+/// envelope that the circle displays under another member's name (fake
+/// SOS, fake chat, fake check-in).
+bool isSenderSpoof(Envelope env, Map<String, dynamic> open) {
+  final inner = open['sender'];
+  return inner is! String || inner != env.deviceId;
+}
+
 /// Single source of truth for the UI: identity, circles, live positions,
 /// chat, places, SOS/check-in state, and the tracking loop.
 class AppState extends ChangeNotifier {
@@ -202,9 +212,13 @@ class AppState extends ChangeNotifier {
   /// Periodic background jobs while the app lives:
   ///  * joiner without a key: keep asking the server until the owner grants one
   ///  * owner: notice new members and remind to grant keys
+  ///
+  /// One minute cadence: joining a circle is a human-paced action, so 60s
+  /// is plenty of latency while costing a fraction of the network traffic
+  /// of a 20s poll (the owner path fetches the full member list each tick).
   void _startHousekeeping() {
     var lastPruneDay = DateTime.now().day;
-    _housekeepingTimer ??= Timer.periodic(const Duration(seconds: 20), (
+    _housekeepingTimer ??= Timer.periodic(const Duration(seconds: 60), (
       _,
     ) async {
       // Bound the on-device envelope cache once per day.
@@ -440,6 +454,11 @@ class AppState extends ChangeNotifier {
         ciphertextB64: env.ciphertext,
         senderPubEd25519B64: sender.ed25519Pub,
       );
+      // The inner sender is part of the signed plaintext; the server's
+      // device_id comes from the bearer token. They must agree — otherwise
+      // a member could sign an envelope claiming to be someone else and it
+      // would display under the victim's name (fake SOS, fake chat, ...).
+      if (isSenderSpoof(env, open)) return;
       // The inner kind/ts are signed by the sender; the server could replay
       // an old emergency alert, so drop stale ones before they alarm anyone.
       final kind = open['kind'] as String? ?? '';
@@ -567,6 +586,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _wsLoop(String circleId) async {
+    // Reconnect with capped exponential backoff: against a dead server,
+    // a flat 5s cadence burns battery and hammers the network. Healthy
+    // round-trips reset the backoff.
+    var delay = const Duration(seconds: 2);
     while (!_disposed && activeCircleId == circleId) {
       try {
         _wsSub = api.liveStream(circleId).listen((env) {
@@ -575,13 +598,15 @@ class AppState extends ChangeNotifier {
           unawaited(_ingest(env));
         });
         await _wsSub!.asFuture<void>().catchError((_) => null);
+        delay = const Duration(seconds: 2);
       } catch (_) {
         // fallthrough to reconnect; the catch-up fetch below decides
         // whether the server still accepts us (403 = membership revoked).
       }
       if (_disposed || activeCircleId != circleId) return;
       // Catch up on anything missed while the socket was down before
-      // reconnecting, so the map never goes stale after a drop.
+      // reconnecting, so the map never goes stale after a drop. The 403
+      // check here is what stops the loop when membership is revoked.
       try {
         final envs = await api.latestEnvelopes(circleId);
         for (final env in envs) {
@@ -607,7 +632,10 @@ class AppState extends ChangeNotifier {
       } catch (_) {
         // offline — reconnect and retry
       }
-      await Future<void>.delayed(const Duration(seconds: 5));
+      await Future<void>.delayed(delay);
+      if (delay < const Duration(seconds: 60)) {
+        delay = delay * 2;
+      }
     }
   }
 
@@ -634,10 +662,8 @@ class AppState extends ChangeNotifier {
         onTripEnded: _onTripEnded,
       );
       _crash = CrashDetector(onCrash: _onCrashConfirmed);
-      _accelSub = accelerometerEventStream().listen(
-        (e) => _crash?.onAcceleration(e.x, e.y, e.z),
-        onError: (_) {}, // devices without accelerometer: GPS-only detection
-      );
+      // The accelerometer subscription is gated on movement by
+      // _syncAccel (see below) — it starts out off.
       tracking = true;
       notifyListeners();
     } catch (e) {
@@ -666,14 +692,46 @@ class AppState extends ChangeNotifier {
   void _onTrackerFix(Position fix) {
     _trips?.onPosition(fix);
     _crash?.onPosition(fix);
+    _syncAccel(fix);
     // Geofence evaluation must not depend on the network: a fix that fails
     // to post (offline) still needs to produce enter/leave events locally.
     _geofence?.onPosition(fix);
     unawaited(_shareFix(fix));
   }
 
+  int? _slowSince;
+
+  /// The accelerometer is only worth listening to while moving — a parked
+  /// phone can't crash. Gating the subscription on movement keeps the
+  /// sensor and its CPU wakes off during the hours a phone sits still,
+  /// which matters against the <5% battery/day budget. The GPS speed-drop
+  /// crash path works without the sensor either way.
+  void _syncAccel(Position fix) {
+    if (_crash == null) return;
+    final active = _accelSub != null;
+    if (fix.speed >= 6.0) {
+      _slowSince = null;
+      if (!active) {
+        _accelSub = accelerometerEventStream().listen(
+          (e) => _crash?.onAcceleration(e.x, e.y, e.z),
+          onError: (_) {}, // no accelerometer: GPS-only detection
+        );
+      }
+    } else if (fix.speed < 1.0) {
+      _slowSince ??= fix.ts;
+      // Stop listening after 2 stationary minutes; resume on next movement.
+      if (active && fix.ts - _slowSince! > 2 * 60 * 1000) {
+        _accelSub!.cancel();
+        _accelSub = null;
+      }
+    } else {
+      _slowSince = null;
+    }
+  }
+
   /// Posts the encrypted end-of-drive summary (only while sharing).
   void _onTripEnded(TripSummary trip) {
+    if (_disposed) return; // fired from dispose()'s finish() — never notify after dispose
     final circleId = activeCircleId;
     if (circleId == null || !sharing) return;
     events.insert(0, (
@@ -700,6 +758,7 @@ class AppState extends ChangeNotifier {
     required double lng,
     required int ts,
   }) {
+    if (_disposed) return;
     final circleId = activeCircleId;
     if (circleId == null) return;
     events.insert(0, (
@@ -837,11 +896,13 @@ class AppState extends ChangeNotifier {
     final circleId = activeCircleId;
     if (circleId == null || text.trim().isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    chatByCircle.putIfAbsent(circleId, () => []).add((
-      deviceId: deviceId,
-      text: text.trim(),
-      ts: now,
-    ));
+    final list = chatByCircle.putIfAbsent(circleId, () => []);
+    list.add((deviceId: deviceId, text: text.trim(), ts: now));
+    // Same bound as the receive path: an outgoing message backlog must not
+    // grow the in-memory chat without limit.
+    if (list.length > 500) {
+      list.removeRange(0, list.length - 500);
+    }
     try {
       await _postDataEnvelope(circleId, 'message', {'text': text.trim()});
     } catch (_) {
