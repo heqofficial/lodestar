@@ -85,12 +85,25 @@ Restoring the DB restores envelopes (history); members' keys survive independent
 
 `http://your-server:8443/admin` shows server status: uptime, counts, ntfy/APNs config state. It intentionally shows **no locations** — that data is encrypted and only the app can show it.
 
+## Installing the app on phones (Android)
+
+The release APK is built by CI on every push to `main`:
+
+1. Open **Actions → `Android (release APK)`** on the GitHub repo → latest run → **Artifacts → `lodestar-apk`** → download.
+2. Unzip `app-release.apk` and send it to the family (email, shared drive, or a link).
+3. On each phone: open the APK → allow **"install unknown apps"** for your file manager / browser when prompted → install.
+4. First launch: allow **Notifications** (alerts) and, when starting background tracking, **Location** (Allow all the time) and **"Allow battery optimization exemption"** (the system dialog Lodestar shows — this is what keeps tracking alive on modern phones).
+
+The APK is signed with the debug key, which is fine for family sideloading. Production signing (Play Store / F-Droid) is future work.
+
+iOS: build with Xcode (`flutter build ios`) or TestFlight; the app's location permissions and background mode are already configured in `ios/Runner/Info.plist`.
+
 ## Family rollout checklist
 
 1. [ ] Server up (any option above); test `curl http://host:8443/healthz` → `{"status":"ok"}` (this also probes the database — `503` means the store is wedged; Docker restarts it automatically via `HEALTHCHECK`)
-2. [ ] Everyone installs the app (Android: APK/F-Droid; iOS: TestFlight once a build exists)
+2. [ ] Everyone installs the APK from CI artifacts (see above) — iOS via Xcode/TestFlight
 3. [ ] First launch → enter server URL → create your circle
 4. [ ] Share the invite code with family (they get their own keys on their own phones)
 5. [ ] Add Places (Home, School, Work) — everyone gets enter/leave alerts
-6. [ ] Set battery mode per device; test a drive
+6. [ ] Start tracking on each phone; accept the battery-optimization dialog; test a drive
 7. [ ] (Optional) Deploy ntfy and subscribe each phone's ntfy app to the circle topic for alerts when Lodestar isn't open

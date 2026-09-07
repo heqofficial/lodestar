@@ -41,3 +41,32 @@ jobs:
         run: flutter analyze
       - name: Test
         run: flutter test
+
+  android:
+    name: Android (release APK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/lodestar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.47.x"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Dependencies
+        run: flutter pub get
+      - name: Build release APK
+        run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lodestar-apk
+          path: apps/lodestar/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30

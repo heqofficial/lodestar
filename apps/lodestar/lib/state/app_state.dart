@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/api/api_client.dart';
 import '../core/api/models.dart';
 import '../core/crypto/crypto_service.dart';
+import '../core/platform/battery.dart';
 import '../core/store/local_db.dart';
 import '../core/tracking/adaptive_tracker.dart';
 import '../core/tracking/crash_detector.dart';
@@ -653,6 +654,10 @@ class AppState extends ChangeNotifier {
         throw StateError('circle key missing — ask the owner to grant access');
       }
       await _tracker!.start();
+      // Background location dies on most phones without the battery
+      // whitelist (Doze + OEM battery managers). One system dialog, then
+      // tracking survives for days instead of hours.
+      await requestBatteryOptimizationExemption();
       _geofence = GeofenceEngine(
         places: places.values.toList(),
         onEvent: _onGeofenceEvent,
