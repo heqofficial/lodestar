@@ -1,0 +1,34 @@
+# --- Go ---
+server/lodestard
+server/data.db
+server/*.test
+*.prof
+
+# --- Flutter/Dart ---
+apps/lodestar/.dart_tool/
+apps/lodestar/.flutter-plugins
+apps/lodestar/.flutter-plugins-dependencies
+apps/lodestar/build/
+apps/lodestar/.metadata
+apps/lodestar/ios/Pods/
+apps/lodestar/ios/.symlinks/
+apps/lodestar/ios/Flutter/ephemeral/
+apps/lodestar/ios/Flutter/Generated.xcconfig
+apps/lodestar/android/.gradle/
+apps/lodestar/android/local.properties
+apps/lodestar/android/app/.cxx/
+apps/lodestar/.idea/
+apps/lodestar/*.iml
+
+# --- OS/editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# --- Secrets (never commit) ---
+*.pem
+*.p8
+.env
+.env.*

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lodestar — server status</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.5rem; }
+  .card { border: 1px solid #8884; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .row { display: flex; justify-content: space-between; padding: .35rem 0; border-bottom: 1px solid #8882; }
+  .row:last-child { border-bottom: none; }
+  .ok { color: #2e9e5b; font-weight: 600; }
+  .off { color: #b8551e; font-weight: 600; }
+  .muted { color: #888; }
+</style>
+</head>
+<body>
+<h1>⭐ Lodestar — server status</h1>
+<p class="muted">This page intentionally shows <strong>no locations</strong>. All circle content is end-to-end encrypted; only the apps can display it.</p>
+<div class="card" id="stats">
+  <div class="row"><span>Uptime</span><span id="up">—</span></div>
+  <div class="row"><span>Devices</span><span id="devices">—</span></div>
+  <div class="row"><span>Circles</span><span id="circles">—</span></div>
+  <div class="row"><span>Members</span><span id="members">—</span></div>
+  <div class="row"><span>Envelopes stored (ciphertext)</span><span id="envelopes">—</span></div>
+  <div class="row"><span>ntfy push</span><span id="ntfy">—</span></div>
+  <div class="row"><span>APNs push</span><span id="apns">—</span></div>
+</div>
+<p class="muted">Lodestar — AGPL-3.0 · <a href="/healthz">healthz</a></p>
+<script>
+  const s = window.__LODESTAR_STATS__ || {};
+  const fmt = n => (n === undefined || n === null) ? '—' : Number(n).toLocaleString();
+  document.getElementById('up').textContent = s.uptime_s ? Math.floor(s.uptime_s/3600) + 'h ' + Math.floor(s.uptime_s%3600/60) + 'm' : '—';
+  document.getElementById('devices').textContent = fmt(s.devices);
+  document.getElementById('circles').textContent = fmt(s.circles);
+  document.getElementById('members').textContent = fmt(s.members);
+  document.getElementById('envelopes').textContent = fmt(s.envelopes);
+  const push = s.push || {};
+  document.getElementById('ntfy').innerHTML = push.ntfy ? '<span class="ok">enabled</span>' : '<span class="off">off</span>';
+  document.getElementById('apns').innerHTML = push.apns ? '<span class="ok">enabled</span>' : '<span class="off">off</span>';
+</script>
+</body>
+</html>

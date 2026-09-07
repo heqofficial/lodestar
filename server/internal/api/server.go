@@ -1,0 +1,201 @@
+// Package api implements the Lodestar HTTP + WebSocket API.
+//
+// Design invariants:
+//   - Envelope payloads are opaque: the server validates shape, never content.
+//   - Bearer tokens identify devices; only SHA-256 hashes are stored.
+//   - All circle data access is membership-checked.
+package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"io/fs"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/heqofficial/lodestar/server/internal/push"
+	"github.com/heqofficial/lodestar/server/internal/store"
+)
+
+//go:embed static
+var staticFS embed.FS
+
+// Server holds the API's dependencies.
+type Server struct {
+	store      *store.Store
+	push       *push.Multi
+	hub        *Hub
+	adminToken string
+	limiter    *rateLimiter
+	startedAt  time.Time
+	pushKinds  map[string]bool
+}
+
+// New constructs the API server. pushKinds lists envelope kinds that trigger
+// a push notification (e.g. "sos,geofence").
+func New(st *store.Store, sender *push.Multi, adminToken string, pushKinds []string) *Server {
+	kinds := map[string]bool{}
+	for _, k := range pushKinds {
+		kinds[strings.TrimSpace(k)] = true
+	}
+	return &Server{
+		store:      st,
+		push:       sender,
+		hub:        NewHub(),
+		adminToken: adminToken,
+		limiter:    newRateLimiter(120, 240), // 120 req/min per device, burst 240
+		startedAt:  time.Now(),
+		pushKinds:  kinds,
+	}
+}
+
+// Handler returns the root http.Handler.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /admin", s.handleAdmin)
+
+	mux.HandleFunc("POST /api/v1/devices", s.handleRegisterDevice)
+	mux.HandleFunc("GET /api/v1/me", s.auth(s.handleMe))
+	mux.HandleFunc("GET /api/v1/circles", s.auth(s.handleListCircles))
+	mux.HandleFunc("POST /api/v1/circles", s.auth(s.handleCreateCircle))
+	mux.HandleFunc("POST /api/v1/circles/join", s.auth(s.handleJoinCircle))
+	mux.HandleFunc("GET /api/v1/circles/{id}", s.auth(s.handleCircleDetail))
+	mux.HandleFunc("GET /api/v1/circles/{id}/envelopes", s.auth(s.handleGetEnvelopes))
+	mux.HandleFunc("GET /api/v1/circles/{id}/envelopes/latest", s.auth(s.handleLatestEnvelopes))
+	mux.HandleFunc("POST /api/v1/circles/{id}/envelopes", s.auth(s.handlePostEnvelope))
+	mux.HandleFunc("POST /api/v1/circles/{id}/keys", s.auth(s.handlePutKeyBlob))
+	mux.HandleFunc("GET /api/v1/circles/{id}/keys/mine", s.auth(s.handleGetKeyBlob))
+	mux.HandleFunc("POST /api/v1/circles/{id}/invites", s.auth(s.handleCreateInvite))
+	mux.HandleFunc("POST /api/v1/circles/{id}/members/{did}/sharing", s.auth(s.handleSetSharing))
+	mux.HandleFunc("DELETE /api/v1/circles/{id}/members/{did}", s.auth(s.handleRemoveMember))
+	mux.HandleFunc("GET /api/v1/ws", s.auth(s.handleWebSocket))
+
+	return logRequests(corsHeaders(mux))
+}
+
+// ---------------------------------------------------------------------------
+// middleware
+// ---------------------------------------------------------------------------
+
+type ctxKey int
+
+const ctxDeviceKey ctxKey = 0
+
+func deviceFrom(ctx context.Context) *store.Device {
+	d, _ := ctx.Value(ctxDeviceKey).(*store.Device)
+	return d
+}
+
+// auth resolves the Bearer token to a device and applies rate limiting.
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r)
+		if token == "" {
+			writeErr(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		sum := sha256.Sum256([]byte(token))
+		dev, err := s.store.DeviceByTokenHash(hex.EncodeToString(sum[:]))
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		if !s.limiter.allow(dev.ID) {
+			writeErr(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), ctxDeviceKey, dev)))
+	}
+}
+
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer ")
+	}
+	return ""
+}
+
+// corsHeaders keeps web tools (and the future dashboard) working with the API.
+func corsHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		// Keep the log quiet for high-frequency location traffic.
+		if !strings.Contains(r.URL.Path, "/envelopes") {
+			log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// rateLimiter is a small in-memory token bucket per device.
+type rateLimiter struct {
+	mu    sync.Mutex
+	rate  float64
+	burst float64
+	toks  map[string]float64
+	last  map[string]time.Time
+}
+
+func newRateLimiter(rate, burst float64) *rateLimiter {
+	return &rateLimiter{rate: rate, burst: burst, toks: map[string]float64{}, last: map[string]time.Time{}}
+}
+
+func (rl *rateLimiter) allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	last, ok := rl.last[key]
+	if !ok {
+		rl.toks[key] = rl.burst
+	} else {
+		rl.toks[key] += now.Sub(last).Seconds() * rl.rate
+		if rl.toks[key] > rl.burst {
+			rl.toks[key] = rl.burst
+		}
+	}
+	rl.last[key] = now
+	if rl.toks[key] >= 1 {
+		rl.toks[key]--
+		return true
+	}
+	return false
+}
+
+// dashboardFS exposes the embedded admin page.
+func dashboardFS() (fs.FS, error) { return fs.Sub(staticFS, "static") }

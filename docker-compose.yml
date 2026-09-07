@@ -1,0 +1,29 @@
+services:
+  lodestar:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: lodestar:local
+    container_name: lodestar
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      # LODESTAR_NTFY_URL: "http://ntfy:80"   # uncomment to enable push relay
+      # LODESTAR_NTFY_TOKEN: ""               # ntfy access token, if required
+      # LODESTAR_ADMIN_TOKEN: ""              # protects /admin
+      # LODESTAR_PUSH_KINDS: "sos,geofence"
+    volumes:
+      - ./data:/data
+
+  # Optional self-hosted push notifications (https://ntfy.sh).
+  # Uncomment to enable; then set LODESTAR_NTFY_URL=http://ntfy:80 above.
+  # ntfy:
+  #   image: binwiederhier/ntfy
+  #   container_name: ntfy
+  #   restart: unless-stopped
+  #   command: serve
+  #   volumes:
+  #     - ./ntfy:/var/lib/ntfy
+  #   ports:
+  #     - "8080:80"
