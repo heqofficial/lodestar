@@ -84,7 +84,34 @@ class PlacesScreen extends StatelessWidget {
                     subtitle: Text('${p.radiusM.round()} m radius'),
                     trailing: IconButton(
                       icon: const Icon(Icons.delete_outline),
-                      onPressed: () => state.deletePlace(p.id),
+                      tooltip: 'Delete place',
+                      onPressed: () async {
+                        // Deleting is circle-wide (everyone's geofence drops
+                        // the place), so ask before the one-tap removal.
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Delete place?'),
+                            content: Text(
+                              '“${p.name}” will be removed for the whole circle.',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: const Text('Cancel'),
+                              ),
+                              FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                ),
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Delete'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (ok == true) await state.deletePlace(p.id);
+                      },
                     ),
                   ),
                 );

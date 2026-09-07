@@ -13,20 +13,28 @@ class SosScreen extends StatefulWidget {
 }
 
 class _SosScreenState extends State<SosScreen> {
-  bool _sent = false;
+  String _outcome = ''; // '', 'sent', 'queued', 'failed'
   bool _busy = false;
+
+  bool get _done => _outcome != '';
 
   Future<void> _trigger() async {
     setState(() => _busy = true);
     try {
-      await context.read<AppState>().sendSos();
+      final outcome = await context.read<AppState>().sendSos();
       if (mounted) {
-        setState(() => _sent = true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('🚨 SOS sent to your circle'),
-            backgroundColor: Color(0xFFE05D5D),
+        setState(() => _outcome = outcome);
+        final (text, color) = switch (outcome) {
+          'sent' => ('🚨 SOS sent to your circle', const Color(0xFF2E9E5B)),
+          'queued' => (
+            '⚠️ Offline — SOS queued, retrying automatically',
+            const Color(0xFFB8551E),
           ),
+          _ => ('SOS could not be sent — no circle key granted',
+              const Color(0xFFE05D5D)),
+        };
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(text), backgroundColor: color),
         );
       }
     } finally {
@@ -36,6 +44,22 @@ class _SosScreenState extends State<SosScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final color = switch (_outcome) {
+      'sent' => const Color(0xFF2E9E5B),
+      'queued' => const Color(0xFFB8551E),
+      _ => const Color(0xFFE05D5D),
+    };
+    final label = switch (_outcome) {
+      'sent' => 'SOS SENT',
+      'queued' => 'SOS QUEUED',
+      _ => 'PRESS TO SEND',
+    };
+    final icon = switch (_outcome) {
+      'sent' => Icons.check_circle,
+      'queued' => Icons.schedule,
+      'failed' => Icons.error_outline,
+      _ => Icons.emergency,
+    };
     return Scaffold(
       appBar: AppBar(title: const Text('SOS')),
       body: SafeArea(
@@ -53,23 +77,17 @@ class _SosScreenState extends State<SosScreen> {
               const SizedBox(height: 32),
               Center(
                 child: GestureDetector(
-                  onTap: _busy || _sent ? null : _trigger,
+                  onTap: _busy || _done ? null : _trigger,
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
-                    width: _sent ? 180 : 200,
-                    height: _sent ? 180 : 200,
+                    width: _done ? 180 : 200,
+                    height: _done ? 180 : 200,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: _sent
-                          ? const Color(0xFF2E9E5B)
-                          : const Color(0xFFE05D5D),
+                      color: color,
                       boxShadow: [
                         BoxShadow(
-                          color:
-                              (_sent
-                                      ? const Color(0xFF2E9E5B)
-                                      : const Color(0xFFE05D5D))
-                                  .withValues(alpha: 0.4),
+                          color: color.withValues(alpha: 0.4),
                           blurRadius: 32,
                           spreadRadius: 4,
                         ),
@@ -78,14 +96,10 @@ class _SosScreenState extends State<SosScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(
-                          _sent ? Icons.check_circle : Icons.emergency,
-                          color: Colors.white,
-                          size: 64,
-                        ),
+                        Icon(icon, color: Colors.white, size: 64),
                         const SizedBox(height: 8),
                         Text(
-                          _sent ? 'SOS SENT' : 'PRESS TO SEND',
+                          label,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -111,7 +125,9 @@ class _SosScreenState extends State<SosScreen> {
               ),
               const SizedBox(height: 24),
               Text(
-                'Use for real emergencies only. Everyone in your circle will see your location immediately.',
+                _outcome == 'queued'
+                    ? 'You appear to be offline. Lodestar is retrying automatically — the alert will go out as soon as you reconnect.'
+                    : 'Use for real emergencies only. Everyone in your circle will see your location immediately.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),

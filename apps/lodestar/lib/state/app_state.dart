@@ -39,6 +39,20 @@ bool isSenderSpoof(Envelope env, Map<String, dynamic> open) {
   return inner is! String || inner != env.deviceId;
 }
 
+/// Kinds this device inserts into its own UI *before* the server round-
+/// trip completes (optimistic inserts). The server echoes every envelope
+/// back to the sender's own socket, so echoes of these must be suppressed
+/// or every self-sent message/check-in/SOS/trip would appear twice.
+/// Location, geofence and place echoes are NOT suppressed: the sender's
+/// own marker and geofence events only render via the echo.
+const Set<String> optimisticKinds = {'message', 'checkin', 'sos', 'trip', 'crash'};
+
+/// True when [envNonce] is one this device already sent AND [kind] is an
+/// optimistically-displayed kind — i.e. [envNonce] is our own echo. The
+/// match consumes the nonce so a single echo suppresses exactly once.
+bool isOwnEcho(Set<String> sentNonces, String envNonce, String kind) =>
+    optimisticKinds.contains(kind) && sentNonces.remove(envNonce);
+
 /// Single source of truth for the UI: identity, circles, live positions,
 /// chat, places, SOS/check-in state, and the tracking loop.
 class AppState extends ChangeNotifier {
@@ -101,6 +115,25 @@ class AppState extends ChangeNotifier {
 
   /// Envelope ids already processed (replay protection).
   final Set<String> _seenIds = {};
+
+  /// Nonces of envelopes this device just sent. The server echoes every
+  /// envelope back to the sender's own socket, so optimistic inserts
+  /// (chat, check-in, SOS, trip, crash) would otherwise double up.
+  final Set<String> _sentNonces = {};
+
+  /// Emergency envelopes (SOS/crash) that failed to post while offline.
+  /// Retried on every reconnect/housekeeping tick until delivered or
+  /// stale (>10 min, matching the receivers' staleness window) — an
+  /// emergency that silently vanishes is worse than a late one.
+  final List<({String circleId, String kind, int ts, String nonce, String ciphertext})>
+  _emergencyOutbox = [];
+
+  void _rememberSent(String nonce) {
+    _sentNonces.add(nonce);
+    if (_sentNonces.length > 1000) {
+      _sentNonces.remove(_sentNonces.first);
+    }
+  }
   int _memberCount = 0; // last known member count of the active circle
 
   /// Newest chat message ts per circle — cursor for catch-up after a socket
@@ -230,6 +263,11 @@ class AppState extends ChangeNotifier {
           await _db?.prune();
         } catch (_) {}
       }
+      // Retry queued emergencies on a slow cadence (they also flush on
+      // every WebSocket reconnect, which is the fast path).
+      try {
+        await _flushEmergencyOutbox();
+      } catch (_) {}
       final circleId = activeCircleId;
       if (circleId == null) return;
       final key = await crypto.circleKey(circleId);
@@ -409,17 +447,29 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _loadCircleState(String circleId) async {
-    // Latest positions + places from the server cache, then local cache.
+    // 1) Hydrate from the on-device cache first, chronologically. The
+    //    server's "latest per device+kind" endpoint carries only the single
+    //    newest envelope of each kind — refreshing from it alone would
+    //    wipe chat, places and events from the UI on every launch even
+    //    though they are all cached locally.
+    try {
+      final cached =
+          await _db?.cachedEnvelopes(circleId, ascending: true) ?? [];
+      for (final e in cached) {
+        await _ingest(e);
+      }
+    } catch (_) {
+      // Cache unreadable — start empty rather than crash.
+    }
+    // 2) Freshen with the server's latest per device+kind (deduped by id
+    //    against the cached batch above).
     try {
       final envs = await api.latestEnvelopes(circleId);
       for (final e in envs) {
         await _ingest(e);
       }
     } catch (_) {
-      final cached = await _db?.cachedEnvelopes(circleId) ?? [];
-      for (final e in cached) {
-        await _ingest(e);
-      }
+      // Offline — the cache hydration above is what we have.
     }
   }
 
@@ -460,6 +510,9 @@ class AppState extends ChangeNotifier {
       // a member could sign an envelope claiming to be someone else and it
       // would display under the victim's name (fake SOS, fake chat, ...).
       if (isSenderSpoof(env, open)) return;
+      // Our own echo of an optimistically-displayed send (see
+      // [_rememberSent]) — already in the UI, don't add it twice.
+      if (isOwnEcho(_sentNonces, env.nonce, env.kind)) return;
       // The inner kind/ts are signed by the sender; the server could replay
       // an old emergency alert, so drop stale ones before they alarm anyone.
       final kind = open['kind'] as String? ?? '';
@@ -627,6 +680,8 @@ class AppState extends ChangeNotifier {
             if (env.circleId == circleId) await _ingest(env);
           }
         }
+        // We are online again: deliver any queued emergencies.
+        await _flushEmergencyOutbox();
       } on ApiException catch (e) {
         // 403: membership revoked — stop the reconnect loop.
         if (e.statusCode == 403) return;
@@ -775,9 +830,9 @@ class AppState extends ChangeNotifier {
     if (events.length > 200) {
       events.removeRange(200, events.length);
     }
-    unawaited(
-      _postDataEnvelopeSafe(circleId, 'crash', {'lat': lat, 'lng': lng}),
-    );
+    // Crash alerts go through the emergency outbox too: if the first
+    // attempt fails offline, it retries on reconnect (not silently lost).
+    unawaited(_postEmergency(circleId, 'crash', ts, {'lat': lat, 'lng': lng}));
     notifyListeners();
   }
 
@@ -932,9 +987,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendSos({String note = ''}) async {
+  /// Sends an SOS. Returns the honest delivery outcome:
+  ///  * `'sent'`   — posted to the server
+  ///  * `'queued'` — offline; kept and retried automatically until it
+  ///    posts or goes stale (>10 min, matching the receivers' staleness
+  ///    window)
+  ///  * `'failed'` — could not even seal it (no circle key)
+  Future<String> sendSos({String note = ''}) async {
     final circleId = activeCircleId;
-    if (circleId == null) return;
+    if (circleId == null) return 'failed';
     final now = DateTime.now().millisecondsSinceEpoch;
     final pos = positionsByDevice[deviceId];
     events.insert(0, (
@@ -943,14 +1004,113 @@ class AppState extends ChangeNotifier {
       text: note.isEmpty ? 'SOS' : note,
       ts: now,
     ));
-    try {
-      await _postDataEnvelope(circleId, 'sos', {
-        'text': note,
-        if (pos != null) 'lat': pos.lat,
-        if (pos != null) 'lng': pos.lng,
-      });
-    } catch (_) {}
+    if (events.length > 200) {
+      events.removeRange(200, events.length);
+    }
+    final outcome = await _postEmergency(circleId, 'sos', now, {
+      'text': note,
+      if (pos != null) 'lat': pos.lat,
+      if (pos != null) 'lng': pos.lng,
+    });
     notifyListeners();
+    return outcome;
+  }
+
+  /// Seals and posts an emergency envelope (SOS/crash). On network failure
+  /// the sealed envelope is queued for automatic retry. Returns
+  /// `'sent'` / `'queued'` / `'failed'`.
+  Future<String> _postEmergency(
+    String circleId,
+    String kind,
+    int ts,
+    Map<String, dynamic> data,
+  ) async {
+    try {
+      final sealed = await crypto.sealEnvelope(
+        circleId: circleId,
+        deviceId: deviceId,
+        kind: kind,
+        ts: ts,
+        data: data,
+      );
+      _rememberSent(sealed.nonce);
+      try {
+        await api.postEnvelope(
+          circleId: circleId,
+          kind: kind,
+          ts: ts,
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+        );
+        return 'sent';
+      } catch (_) {
+        _enqueueEmergency(
+          circleId,
+          kind,
+          ts,
+          sealed.nonce,
+          sealed.ciphertext,
+        );
+        return 'queued';
+      }
+    } catch (_) {
+      return 'failed'; // no circle key or crypto failure
+    }
+  }
+
+  void _enqueueEmergency(
+    String circleId,
+    String kind,
+    int ts,
+    String nonce,
+    String ciphertext,
+  ) {
+    _emergencyOutbox.add((
+      circleId: circleId,
+      kind: kind,
+      ts: ts,
+      nonce: nonce,
+      ciphertext: ciphertext,
+    ));
+    if (_emergencyOutbox.length > 5) {
+      _emergencyOutbox.removeAt(0); // oldest stale items drop first anyway
+    }
+  }
+
+  /// Retries queued emergencies whenever connectivity returns. Items past
+  /// the receivers' staleness window are dropped — a receiver would ignore
+  /// them anyway. Retries reuse the original ts+nonce, so if the first
+  /// attempt actually landed but the response was lost, the server's
+  /// dedup index makes the retry a no-op instead of a duplicate.
+  Future<void> _flushEmergencyOutbox() async {
+    if (_emergencyOutbox.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final kept = <({
+      String circleId,
+      String kind,
+      int ts,
+      String nonce,
+      String ciphertext,
+    })>[];
+    for (final item in _emergencyOutbox) {
+      if (now - item.ts > 10 * 60 * 1000) continue;
+      try {
+        await api.postEnvelope(
+          circleId: item.circleId,
+          kind: item.kind,
+          ts: item.ts,
+          nonce: item.nonce,
+          ciphertext: item.ciphertext,
+        );
+      } catch (_) {
+        kept.add(item);
+      }
+    }
+    if (kept.length != _emergencyOutbox.length) {
+      _emergencyOutbox
+        ..clear()
+        ..addAll(kept);
+    }
   }
 
   Future<void> _postDataEnvelope(
@@ -966,6 +1126,7 @@ class AppState extends ChangeNotifier {
       ts: now,
       data: data,
     );
+    if (optimisticKinds.contains(kind)) _rememberSent(sealed.nonce);
     await api.postEnvelope(
       circleId: circleId,
       kind: kind,
@@ -975,8 +1136,8 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  /// Fire-and-forget variant for background paths (trip end, crash alert):
-  /// failures must never become unhandled async errors.
+  /// Fire-and-forget variant for background paths (trip end): failures
+  /// must never become unhandled async errors.
   Future<void> _postDataEnvelopeSafe(
     String circleId,
     String kind,
@@ -985,7 +1146,7 @@ class AppState extends ChangeNotifier {
     try {
       await _postDataEnvelope(circleId, kind, data);
     } catch (_) {
-      // Emergency alerts are best-effort; the next one will retry.
+      // Best-effort; the next one will retry.
     }
   }
 

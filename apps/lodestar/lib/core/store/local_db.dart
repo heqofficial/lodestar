@@ -106,7 +106,11 @@ class LocalDb {
     String circleId, {
     String? kind,
     int limit = 500,
+    bool ascending = false,
   }) async {
+    // Always fetch the NEWEST [limit] (DESC + LIMIT), then reverse in
+    // memory when the caller wants chronological order — ORDER BY ts ASC
+    // LIMIT n would return the n OLDEST rows instead.
     final rows = await _db.query(
       'envelopes',
       where: kind == null ? 'circle_id = ?' : 'circle_id = ? AND kind = ?',
@@ -114,7 +118,7 @@ class LocalDb {
       orderBy: 'ts DESC',
       limit: limit,
     );
-    return rows
+    final envelopes = rows
         .map(
           (r) => Envelope(
             id: r['id'] as String,
@@ -127,6 +131,7 @@ class LocalDb {
           ),
         )
         .toList();
+    return ascending ? envelopes.reversed.toList() : envelopes;
   }
 
   Future<void> upsertCircle(Circle c) async {

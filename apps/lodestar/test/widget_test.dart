@@ -256,6 +256,29 @@ void main() {
     });
   });
 
+  group('isOwnEcho (self-echo suppression)', () {
+    test('matching optimistic-kind echo is suppressed exactly once', () {
+      final sent = <String>{'nonce-1'};
+      expect(isOwnEcho(sent, 'nonce-1', 'message'), isTrue);
+      expect(sent, isEmpty); // consumed — a later replay is not suppressed again
+    });
+
+    test('non-optimistic kinds are never suppressed', () {
+      final sent = <String>{'nonce-1'};
+      // Location/geofence echoes render the sender's own marker and
+      // events — they must pass through untouched.
+      expect(isOwnEcho(sent, 'nonce-1', 'location'), isFalse);
+      expect(isOwnEcho(sent, 'nonce-1', 'geofence'), isFalse);
+      expect(sent, {'nonce-1'});
+    });
+
+    test('another device\u2019s nonce is not our echo', () {
+      final sent = <String>{'mine'};
+      expect(isOwnEcho(sent, 'theirs', 'sos'), isFalse);
+      expect(sent, {'mine'});
+    });
+  });
+
   group('isStaleAlert (replay policy)', () {
     final now = 1_700_000_000_000;
 

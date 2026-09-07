@@ -48,6 +48,9 @@ Places live in the app, not the server. Each device compares its own fixes again
 
 - **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app sends a small JSON keepalive every 25 s (protocol pings alone would NOT reset coder/websocket's per-read deadline — only a completed data read does) and after any disconnect it re-fetches `latest` plus missed chat, so the map and chat never miss a beat. Reconnects back off exponentially (2→60 s) so a dead server can't burn battery; sockets are closed server-side within seconds of a member being removed, and each device is capped at 2 live sockets per circle so one member can't amplify broadcasts.
 - **Immediate revocation** — removing a member closes their live socket server-side, so they stop receiving the circle stream the moment they're removed.
+- **Cache-first hydration** — opening a circle (and app launch) renders from the on-device envelope cache first (newest 500, chronologically), then refreshes with the server's latest per device+kind. The server endpoint alone only carries the newest envelope of each kind, which would otherwise wipe chat/places/events from the UI on every restart.
+- **Self-echo suppression** — the server echoes every envelope back to its sender. Kinds shown optimistically in the UI (chat, check-in, SOS, trip, crash) are suppressed on their own echo (matched by nonce); location/geofence/place echoes are kept because the sender's own marker and geofence events render only via the echo.
+- **Emergency outbox** — an SOS/crash that fails to post (offline) is kept sealed and retried on every reconnect and housekeeping tick until delivered or stale (>10 min, matching the receivers' staleness window). The SOS screen reports `sent` / `queued` / `failed` honestly instead of claiming delivery.
 
 ## Server hardening
 

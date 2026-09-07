@@ -18,7 +18,11 @@ class MemberAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final initial = name.isEmpty ? '?' : name[0].toUpperCase();
+    // Use runes, not [0]: an emoji name is a surrogate pair and name[0]
+    // would split it into a lone surrogate that renders as garbage.
+    final initial = name.isEmpty
+        ? '?'
+        : String.fromCharCode(name.runes.first).toUpperCase();
     return Stack(
       alignment: Alignment.center,
       children: [
