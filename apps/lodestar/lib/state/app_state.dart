@@ -10,6 +10,7 @@ import '../core/api/api_client.dart';
 import '../core/api/models.dart';
 import '../core/crypto/crypto_service.dart';
 import '../core/platform/battery.dart';
+import '../core/platform/push_tokens.dart';
 import '../core/store/local_db.dart';
 import '../core/tracking/adaptive_tracker.dart';
 import '../core/tracking/crash_detector.dart';
@@ -199,6 +200,7 @@ class AppState extends ChangeNotifier {
     await prefs.setString('device_name', deviceName);
     await prefs.setString('token', token);
     _api = ApiClient(baseUrl: serverUrl, token: token);
+    unawaited(_syncPushToken());
     notifyListeners();
   }
 
@@ -235,11 +237,23 @@ class AppState extends ChangeNotifier {
         await _loadCircleState(activeCircleId!);
       }
       _startHousekeeping();
+      unawaited(_syncPushToken());
     } catch (e) {
       lastError = '$e';
     } finally {
       booting = false;
       notifyListeners();
+    }
+  }
+
+  /// Registers the iOS APNs device token with the server. Android is a
+  /// no-op (push rides the ntfy app there), and a failed sync must never
+  /// break the app — push is a bonus, not a core path.
+  Future<void> _syncPushToken() async {
+    if (!registered || _api == null) return;
+    final token = await PushTokenService.apnsToken();
+    if (token.isNotEmpty) {
+      await _api!.setPushToken(token);
     }
   }
 
@@ -255,12 +269,16 @@ class AppState extends ChangeNotifier {
     _housekeepingTimer ??= Timer.periodic(const Duration(seconds: 60), (
       _,
     ) async {
-      // Bound the on-device envelope cache once per day.
+      // Bound the on-device envelope cache once per day, and keep the
+      // APNs token fresh (it rotates; a stale one silently stops push).
       final now = DateTime.now();
       if (now.day != lastPruneDay) {
         lastPruneDay = now.day;
         try {
           await _db?.prune();
+        } catch (_) {}
+        try {
+          await _syncPushToken();
         } catch (_) {}
       }
       // Retry queued emergencies on a slow cadence (they also flush on

@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS devices (
 	ed25519_pub   TEXT NOT NULL,
 	x25519_pub    TEXT NOT NULL,
 	token_hash    TEXT NOT NULL UNIQUE,
+	apns_token    TEXT NOT NULL DEFAULT '',
 	created_at    INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS circles (
@@ -109,6 +110,17 @@ CREATE TABLE IF NOT EXISTS key_blobs (
 	_, err := s.db.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+	// Column additions for databases created before the column existed.
+	// SQLite has no "ADD COLUMN IF NOT EXISTS", so probe pragma_table_info.
+	var hasAPNs bool
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = 'apns_token'`).Scan(&hasAPNs); err != nil {
+		return fmt.Errorf("migrate probe: %w", err)
+	}
+	if !hasAPNs {
+		if _, err := s.db.Exec(`ALTER TABLE devices ADD COLUMN apns_token TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate: add apns_token: %w", err)
+		}
 	}
 	return nil
 }

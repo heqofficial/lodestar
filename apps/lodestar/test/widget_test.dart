@@ -1,10 +1,11 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lodestar/core/api/models.dart';
 import 'package:lodestar/core/crypto/crypto_service.dart';
 import 'package:lodestar/core/geo.dart';
+import 'package:lodestar/core/platform/push_tokens.dart';
 import 'package:lodestar/core/tracking/geofence_engine.dart';
 import 'package:lodestar/state/app_state.dart';
 
@@ -391,6 +392,29 @@ void main() {
       );
       // Leave fires, but the quick re-enter is debounced (within 60 s).
       expect(events, ['leave']);
+    });
+  });
+
+  group('PushTokenService', () {
+    test('reads the APNs token from the native channel', () async {
+      PushTokenService.isIos = true;
+      addTearDown(() => PushTokenService.isIos = false);
+      const channel = MethodChannel('dev.lodestar/push');
+      TestWidgetsFlutterBinding.ensureInitialized();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        expect(call.method, 'apnsToken');
+        return 'deadbeef0102';
+      });
+      addTearDown(() => TestDefaultBinaryMessengerBinding.instance
+          .defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null));
+      expect(await PushTokenService.apnsToken(), 'deadbeef0102');
+    });
+
+    test('is a no-op off iOS and survives a missing channel', () async {
+      PushTokenService.isIos = false;
+      expect(await PushTokenService.apnsToken(), '');
     });
   });
 

@@ -23,6 +23,7 @@ import (
 const (
 	maxEnvelopeSize  = 64 << 10 // 64 KiB of ciphertext per envelope
 	maxNameLen       = 64
+	maxPushTokenLen  = 512 // APNs tokens are ~64 hex chars; headroom for format drift
 	maxCirclePerUser = 32
 
 	// Per-kind envelope throttles (per device, per circle): the app posts
@@ -104,6 +105,7 @@ type registerRequest struct {
 	Name       string `json:"name"`
 	Ed25519Pub string `json:"ed25519_pub"`
 	X25519Pub  string `json:"x25519_pub"`
+	APNsToken  string `json:"apns_token"`
 }
 
 func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
@@ -120,7 +122,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = "My Device"
 	}
-	if len(req.Name) > maxNameLen || req.Ed25519Pub == "" || req.X25519Pub == "" {
+	if len(req.Name) > maxNameLen || req.Ed25519Pub == "" || req.X25519Pub == "" || len(req.APNsToken) > maxPushTokenLen {
 		writeErr(w, http.StatusBadRequest, "invalid fields")
 		return
 	}
@@ -132,6 +134,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		Ed25519Pub: req.Ed25519Pub,
 		X25519Pub:  req.X25519Pub,
 		TokenHash:  sum,
+		APNsToken:  req.APNsToken,
 		CreatedAt:  time.Now().UnixMilli(),
 	}
 	if err := s.store.CreateDevice(dev); err != nil {
@@ -146,6 +149,30 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"device": deviceFrom(r.Context())})
+}
+
+// pushTokenRequest updates this device's push registration. An empty
+// token clears it (device uninstalled the app or revoked notifications).
+type pushTokenRequest struct {
+	APNsToken string `json:"apns_token"`
+}
+
+func (s *Server) handleSetPushToken(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r.Context())
+	var req pushTokenRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	if len(req.APNsToken) > maxPushTokenLen {
+		writeErr(w, http.StatusBadRequest, "token too long")
+		return
+	}
+	if err := s.store.SetAPNsToken(dev.ID, req.APNsToken); err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not save push token")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // --- circles ---------------------------------------------------------------
@@ -310,7 +337,9 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 	if inserted {
 		s.hub.Broadcast(circleID, payload)
 	}
-	// Push alerts for high-signal kinds.
+	// Push alerts for high-signal kinds: one ntfy topic broadcast, then a
+	// per-device APNs fan-out. The sender's own screen is open, so they are
+	// skipped. Tokens Apple rejects are dropped so they stop failing.
 	if s.pushKinds[req.Kind] && s.push != nil && s.push.Enabled() {
 		title := map[string]string{
 			"sos":      "🚨 SOS from " + dev.Name,
@@ -329,6 +358,26 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 				Payload:  payload,
 				Topic:    "lodestar-" + circleID,
 			})
+			targets, err := s.store.APNsTargets(circleID)
+			if err != nil {
+				slog.Warn("apns targets", "err", err)
+				return
+			}
+			for _, t := range targets {
+				if t.DeviceID == dev.ID {
+					continue
+				}
+				err := s.push.Send(ctx, push.Request{
+					Title:       title,
+					Payload:     payload,
+					DeviceToken: t.APNsToken,
+				})
+				if errors.Is(err, push.ErrUnregistered) {
+					if cerr := s.store.SetAPNsToken(t.DeviceID, ""); cerr != nil {
+						slog.Warn("clear apns token", "device", t.DeviceID, "err", cerr)
+					}
+				}
+			}
 		}()
 	}
 	writeJSON(w, http.StatusCreated, stored)

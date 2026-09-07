@@ -588,25 +588,50 @@ func TestWebSocketConnCap(t *testing.T) {
 	}
 }
 
-// recordingSender captures push titles so tests can assert what would have
-// been sent to ntfy/APNs. Push fires from a server goroutine, so the
+// recordedPush captures one push attempt for assertions.
+type recordedPush struct {
+	Title, Topic, DeviceToken string
+}
+
+// recordingSender captures push attempts so tests can assert what would
+// have been sent to ntfy/APNs. Push fires from a server goroutine, so the
 // recording must be synchronized (the race detector will flag it otherwise).
+// unregister marks a device token that fails with ErrUnregistered, like a
+// dead APNs token would.
 type recordingSender struct {
-	mu     sync.Mutex
-	titles []string
+	mu         sync.Mutex
+	pushes     []recordedPush
+	unregister string
 }
 
 func (r *recordingSender) Send(_ context.Context, req push.Request) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.titles = append(r.titles, req.Title)
+	if r.unregister != "" && req.DeviceToken == r.unregister {
+		return push.ErrUnregistered
+	}
+	r.pushes = append(r.pushes, recordedPush{req.Title, req.Topic, req.DeviceToken})
 	return nil
 }
 
-func (r *recordingSender) snapshot() []string {
+func (r *recordingSender) snapshot() []recordedPush {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.titles...)
+	return append([]recordedPush(nil), r.pushes...)
+}
+
+// waitPushes polls until the recording sender has at least n attempts.
+func waitPushes(t testing.TB, rec *recordingSender, n int) []recordedPush {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := rec.snapshot(); len(p) >= n {
+			return p
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d pushes (got %d)", n, len(rec.snapshot()))
+	return nil
 }
 
 func TestCrashPushTitle(t *testing.T) {
@@ -627,20 +652,195 @@ func TestCrashPushTitle(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("crash post: %d", resp.StatusCode)
 	}
-	// Push fires in a goroutine — poll briefly.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(rec.snapshot()) == 1 {
-			break
+	pushes := waitPushes(t, rec, 1)
+	if !strings.Contains(pushes[0].Title, "Alice") {
+		t.Errorf("crash push title = %q, want it to name the member", pushes[0].Title)
+	}
+}
+
+func TestRegisterStoresAPNsToken(t *testing.T) {
+	s, st := newTestServer(t)
+	resp, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
+		"name": "Alice", "ed25519_pub": "e", "x25519_pub": "x", "apns_token": "tok-alice",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("register: %d", resp.StatusCode)
+	}
+	dev := out["device"].(map[string]any)
+	id := dev["id"].(string)
+	d, err := st.DeviceByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.APNsToken != "tok-alice" {
+		t.Errorf("stored apns_token = %q, want tok-alice", d.APNsToken)
+	}
+	// The token must never be serialized to clients.
+	if _, leaked := dev["apns_token"]; leaked {
+		t.Error("apns_token leaked in register response")
+	}
+	resp, out = doJSON(t, s, "GET", "/api/v1/me", out["token"].(string), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("me: %d", resp.StatusCode)
+	}
+	if _, leaked := out["device"].(map[string]any)["apns_token"]; leaked {
+		t.Error("apns_token leaked in /me response")
+	}
+}
+
+func TestPushTokenEndpoint(t *testing.T) {
+	s, st := newTestServer(t)
+	id, tok := register(t, s, "Alice")
+
+	// Unauthenticated updates are rejected.
+	resp, _ := doJSON(t, s, "PUT", "/api/v1/devices/push", "", map[string]any{"apns_token": "x"})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated push update = %d, want 401", resp.StatusCode)
+	}
+	// Set.
+	resp, _ = doJSON(t, s, "PUT", "/api/v1/devices/push", tok, map[string]any{"apns_token": "tok-new"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("set token: %d", resp.StatusCode)
+	}
+	d, _ := st.DeviceByID(id)
+	if d.APNsToken != "tok-new" {
+		t.Errorf("apns_token = %q after set", d.APNsToken)
+	}
+	// Clear with an empty token.
+	resp, _ = doJSON(t, s, "PUT", "/api/v1/devices/push", tok, map[string]any{"apns_token": ""})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear token: %d", resp.StatusCode)
+	}
+	d, _ = st.DeviceByID(id)
+	if d.APNsToken != "" {
+		t.Errorf("apns_token = %q after clear, want empty", d.APNsToken)
+	}
+	// Oversized tokens are rejected.
+	resp, _ = doJSON(t, s, "PUT", "/api/v1/devices/push", tok, map[string]any{"apns_token": strings.Repeat("a", 513)})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("oversized token = %d, want 400", resp.StatusCode)
+	}
+}
+
+// newPushTestServer builds a server whose push attempts are recorded.
+func newPushTestServer(t testing.TB) (*Server, *store.Store, *recordingSender) {
+	t.Helper()
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	rec := &recordingSender{}
+	s := New(st, push.NewMulti(rec), "", []string{"sos", "geofence", "crash"})
+	return s, st, rec
+}
+
+func TestAPNsFanout(t *testing.T) {
+	s, st, rec := newPushTestServer(t)
+	aliceID, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	_, carolTok := register(t, s, "Carol")
+	// Bob registers an APNs token; Carol has none.
+	resp, _ := doJSON(t, s, "PUT", "/api/v1/devices/push", bobTok, map[string]any{"apns_token": "tok-bob"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob token: %d", resp.StatusCode)
+	}
+	resp, out := doJSON(t, s, "POST", "/api/v1/circles", aliceTok, map[string]any{"name": "C"})
+	circleID := out["id"].(string)
+	code := out["invite_code"].(string)
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": code})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob join: %d", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/join", carolTok, map[string]any{"code": code})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("carol join: %d", resp.StatusCode)
+	}
+
+	// Alice (sender, tokenless) posts an SOS.
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", aliceTok, map[string]any{
+		"kind": "sos", "ts": time.Now().UnixMilli(), "nonce": "n1", "ciphertext": "c2ln",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("sos post: %d", resp.StatusCode)
+	}
+	pushes := waitPushes(t, rec, 2)
+
+	// One ntfy topic broadcast and one per-device APNs delivery to Bob —
+	// never to the sender (Alice) and never to tokenless Carol.
+	var topics, devices []recordedPush
+	for _, p := range pushes {
+		if p.Topic != "" {
+			topics = append(topics, p)
 		}
-		time.Sleep(20 * time.Millisecond)
+		if p.DeviceToken != "" {
+			devices = append(devices, p)
+		}
 	}
-	titles := rec.snapshot()
-	if len(titles) != 1 {
-		t.Fatalf("push not sent (titles=%v)", titles)
+	if len(topics) != 1 || topics[0].Topic != "lodestar-"+circleID {
+		t.Errorf("topic pushes = %+v, want exactly one for %q", topics, "lodestar-"+circleID)
 	}
-	if !strings.Contains(titles[0], "Alice") {
-		t.Errorf("crash push title = %q, want it to name the member", titles[0])
+	if len(devices) != 1 || devices[0].DeviceToken != "tok-bob" {
+		t.Errorf("device pushes = %+v, want exactly one for tok-bob", devices)
+	}
+	if !strings.Contains(devices[0].Title, "Alice") {
+		t.Errorf("apns title = %q, want it to name the sender", devices[0].Title)
+	}
+	if d, _ := st.DeviceByID(aliceID); d.APNsToken != "" {
+		t.Error("sender's token should not have been created by the fanout")
+	}
+}
+
+func TestAPNsUnregisteredClearsToken(t *testing.T) {
+	s, st, rec := newPushTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	bobID, bobTok := register(t, s, "Bob")
+	resp, _ := doJSON(t, s, "PUT", "/api/v1/devices/push", bobTok, map[string]any{"apns_token": "tok-dead"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob token: %d", resp.StatusCode)
+	}
+	resp, out := doJSON(t, s, "POST", "/api/v1/circles", aliceTok, map[string]any{"name": "C"})
+	circleID := out["id"].(string)
+	resp, out = doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": out["invite_code"].(string)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob join: %d", resp.StatusCode)
+	}
+	rec.unregister = "tok-dead"
+
+	postSOS := func(nonce string) {
+		t.Helper()
+		resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", aliceTok, map[string]any{
+			"kind": "sos", "ts": time.Now().UnixMilli(), "nonce": nonce, "ciphertext": "c2ln",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("sos post: %d", resp.StatusCode)
+		}
+	}
+
+	postSOS("n1")
+	pushes := waitPushes(t, rec, 1)
+	if len(pushes) != 1 {
+		t.Fatalf("pushes = %+v, want only the topic broadcast (dead token must not record)", pushes)
+	}
+	// Apple said the token is dead — the server must have cleared it.
+	d, err := st.DeviceByID(bobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.APNsToken != "" {
+		t.Errorf("apns_token after unregister = %q, want cleared", d.APNsToken)
+	}
+
+	postSOS("n2")
+	pushes = waitPushes(t, rec, 2)
+	var devices []recordedPush
+	for _, p := range pushes {
+		if p.DeviceToken != "" {
+			devices = append(devices, p)
+		}
+	}
+	if len(devices) != 0 {
+		t.Errorf("device pushes after unregister = %+v, want none", devices)
 	}
 }
 

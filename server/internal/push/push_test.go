@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -114,5 +115,77 @@ func TestMultiDisabled(t *testing.T) {
 	m := NewMulti(nil)
 	if m.Enabled() {
 		t.Fatal("empty multi should be disabled")
+	}
+}
+
+func TestNtfySkipsPerDeviceRequests(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	n := NewNtfy(srv.URL, "")
+	// A per-device APNs request (no topic) must not hit ntfy at all.
+	if err := n.Send(context.Background(), Request{DeviceToken: "tok"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if hit {
+		t.Fatal("ntfy was contacted for a per-device request")
+	}
+}
+
+func TestAPNsPayload(t *testing.T) {
+	p := apnsPayload("🚨 SOS from Alice")
+	if len(p) > 4096 {
+		t.Errorf("payload %d bytes exceeds APNs 4 KiB cap", len(p))
+	}
+	var j struct {
+		Aps struct {
+			Alert struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			} `json:"alert"`
+			Sound string `json:"sound"`
+		} `json:"aps"`
+	}
+	if err := json.Unmarshal(p, &j); err != nil {
+		t.Fatalf("payload is not valid JSON: %v", err)
+	}
+	if j.Aps.Alert.Title != "🚨 SOS from Alice" {
+		t.Errorf("alert title = %q", j.Aps.Alert.Title)
+	}
+	if j.Aps.Alert.Body == "" || j.Aps.Sound == "" {
+		t.Errorf("alert body/sound missing: %s", p)
+	}
+	// The payload must never embed ciphertext — it is a wake-up signal only.
+	if strings.Contains(string(p), "ciphertext") {
+		t.Error("payload embeds envelope data; APNs cap would be exceeded for large envelopes")
+	}
+}
+
+func TestAPNsErrorMapping(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		want   error
+	}{
+		{200, `{}`, nil},
+		{410, `{"reason":"Unregistered"}`, ErrUnregistered},
+		{400, `{"reason":"BadDeviceToken"}`, ErrUnregistered},
+		{403, `{"reason":"BadDeviceToken"}`, ErrUnregistered},
+		{400, `{"reason":"BadTopic"}`, errors.New("generic")}, // config error, not a dead token
+		{503, `{}`, errors.New("generic")},
+	}
+	for _, c := range cases {
+		err := apnsError(c.status, []byte(c.body))
+		switch {
+		case c.want == nil && err != nil:
+			t.Errorf("status %d: err = %v, want nil", c.status, err)
+		case c.want == ErrUnregistered && !errors.Is(err, ErrUnregistered):
+			t.Errorf("status %d: err = %v, want ErrUnregistered", c.status, err)
+		case c.want != nil && c.want != ErrUnregistered && err == nil:
+			t.Errorf("status %d: err = nil, want generic error", c.status)
+		}
 	}
 }

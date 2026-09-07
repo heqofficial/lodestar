@@ -6,10 +6,14 @@
 //     payload is ciphertext, so even an untrusted ntfy relay learns nothing.
 //     Members can subscribe their phones' ntfy app to the circle topic to
 //     get push while Lodestar is not running.
-//   - APNs: posts encrypted envelopes to iOS devices (Apple Push
+//   - APNs: delivers alert notifications to iOS devices (Apple Push
 //     Notification service) using the HTTP/2 API. Requires an Apple
-//     Developer account and a .p8 key. App-side token registration is
-//     roadmap; the provider is wired and config-gated.
+//     Developer account and a .p8 key. Devices register their token via
+//     the API; the server clears tokens that Apple reports unregistered.
+//
+// Providers are mutually exclusive by request shape: a Request with a
+// Topic is an ntfy topic broadcast (APNs skips it), and a Request with a
+// DeviceToken is a per-device APNs delivery (ntfy skips it).
 package push
 
 import (
@@ -76,8 +80,12 @@ func NewNtfy(baseURL, token string) *Ntfy {
 	}
 }
 
-// Send posts the payload to the topic.
+// Send posts the payload to the topic. Per-device requests (no Topic)
+// are not for ntfy and are skipped.
 func (n *Ntfy) Send(ctx context.Context, req Request) error {
+	if req.Topic == "" {
+		return nil
+	}
 	u := n.baseURL + "/" + url.PathEscape(req.Topic)
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(req.Payload))
 	if err != nil {
@@ -158,17 +166,26 @@ func NewAPNs(cfg APNsConfig) (*APNs, error) {
 	}, nil
 }
 
-// Send delivers an encrypted envelope to one device.
+// ErrUnregistered reports an APNs device token that Apple no longer
+// accepts; the server should drop the token instead of retrying it.
+var ErrUnregistered = errors.New("apns: device token unregistered")
+
+// Send delivers an alert notification to one device. Topic broadcasts
+// (no DeviceToken) are not for APNs and are skipped.
+//
+// The push is a wake-up signal only: the alert carries a title, and the
+// app fetches the encrypted envelope over the API when opened. Embedding
+// ciphertext would exceed APNs' 4 KiB payload cap for alerts.
 func (a *APNs) Send(ctx context.Context, req Request) error {
 	if req.DeviceToken == "" {
-		return errors.New("apns: empty device token")
+		return nil
 	}
 	jwt, err := a.providerToken()
 	if err != nil {
 		return err
 	}
 	u := fmt.Sprintf("https://%s/3/device/%s", a.host(), req.DeviceToken)
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(req.Payload))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(apnsPayload(req.Title)))
 	if err != nil {
 		return fmt.Errorf("apns request: %w", err)
 	}
@@ -181,11 +198,46 @@ func (a *APNs) Send(ctx context.Context, req Request) error {
 		return fmt.Errorf("apns send: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("apns status %d: %s", resp.StatusCode, string(body))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return apnsError(resp.StatusCode, body)
+}
+
+// apnsPayload builds the APNs notification JSON. The title is the only
+// human-readable content; the envelope itself stays on the server.
+func apnsPayload(title string) []byte {
+	b, err := json.Marshal(map[string]any{
+		"aps": map[string]any{
+			"alert": map[string]any{
+				"title": title,
+				"body":  "Open Lodestar",
+			},
+			"sound": "default",
+		},
+	})
+	if err != nil {
+		// Cannot happen: the map is static.
+		return []byte(`{"aps":{}}`)
 	}
-	return nil
+	return b
+}
+
+// apnsError maps an APNs response to an error. Only 410 (Unregistered)
+// and BadDeviceToken 400/403 clear the token; anything else is likely a
+// transient server-side problem and must be retried, not forgotten.
+func apnsError(status int, body []byte) error {
+	if status == http.StatusOK {
+		return nil
+	}
+	var r struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(body, &r)
+	if status == http.StatusGone ||
+		(status == http.StatusBadRequest && r.Reason == "BadDeviceToken") ||
+		(status == http.StatusForbidden && r.Reason == "BadDeviceToken") {
+		return ErrUnregistered
+	}
+	return fmt.Errorf("apns status %d: %s", status, string(body))
 }
 
 func (a *APNs) host() string {

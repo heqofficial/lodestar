@@ -60,7 +60,7 @@ All configuration is via env vars (or flags, see `./lodestard -h`):
 | `LODESTAR_PUSH_KINDS` | `sos,geofence,crash` | Envelope kinds that trigger a push relay |
 | `LODESTAR_RETENTION_DAYS` | `90` | Prune location history older than N days (`0` = keep forever). `sos`/`crash` alerts are always kept |
 | `LODESTAR_LOG_JSON` | (unset) | `1` for JSON structured logs (easy log-shipping); default is human-readable text |
-| `LODESTAR_APNS_KEY_PATH` | (empty) | APNs .p8 key path (enables iOS push — roadmap) |
+| `LODESTAR_APNS_KEY_PATH` | (empty) | APNs .p8 key path (enables iOS push) |
 | `LODESTAR_APNS_TEAM_ID` | (empty) | Apple team ID |
 | `LODESTAR_APNS_KEY_ID` | (empty) | APNs key ID |
 | `LODESTAR_APNS_TOPIC` | (empty) | App bundle id (e.g. `dev.lodestar.app`) |
@@ -96,7 +96,16 @@ The release APK is built by CI on every push to `main`:
 
 The APK is signed with the debug key, which is fine for family sideloading. Production signing (Play Store / F-Droid) is future work.
 
-iOS: build with Xcode (`flutter build ios`) or TestFlight; the app's location permissions and background mode are already configured in `ios/Runner/Info.plist`.
+### iOS push (APNs, optional)
+
+Android gets alerts through the ntfy app (step 7 below). iOS can receive them natively through Apple Push Notification service:
+
+1. You need an **Apple Developer account** ($99/yr). In the Apple Developer portal, create an **APNs Auth Key** (Keys → push notifications) and note the **Team ID**, **Key ID**, and the downloaded `.p8` file.
+2. On the server, set `LODESTAR_APNS_KEY_PATH`, `LODESTAR_APNS_TEAM_ID`, `LODESTAR_APNS_KEY_ID`, `LODESTAR_APNS_TOPIC` (your app's bundle id) and `LODESTAR_APNS_ENV=production`.
+3. In Xcode: enable the **Push Notifications** capability for the Runner target (creates `Runner.entitlements` with `aps-environment`) and build/install with your signing team.
+4. The app requests notification permission at launch and registers its token automatically (server endpoint `PUT /api/v1/devices/push`). Tokens Apple reports dead are dropped automatically.
+
+The push is a wake-up signal with a title (e.g. "🚨 SOS from Alice"); the encrypted content itself is fetched from the server when the app opens — ciphertext never touches Apple's network.
 
 ## Family rollout checklist
 
@@ -106,4 +115,4 @@ iOS: build with Xcode (`flutter build ios`) or TestFlight; the app's location pe
 4. [ ] Share the invite code with family (they get their own keys on their own phones)
 5. [ ] Add Places (Home, School, Work) — everyone gets enter/leave alerts
 6. [ ] Start tracking on each phone; accept the battery-optimization dialog; test a drive
-7. [ ] (Optional) Deploy ntfy and subscribe each phone's ntfy app to the circle topic for alerts when Lodestar isn't open
+7. [ ] (Optional) Deploy ntfy and subscribe each phone's ntfy app to the circle topic for alerts when Lodestar isn't open (Android; iOS can use native APNs per the section above)

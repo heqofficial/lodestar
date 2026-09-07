@@ -64,6 +64,11 @@ class ApiClient {
 
   // --- devices -------------------------------------------------------------
 
+  /// Registers (or, with an empty token, clears) this device's APNs token.
+  /// Tokens rotate and die; the server drops ones Apple rejects.
+  Future<void> setPushToken(String apnsToken) =>
+      _send('PUT', '/api/v1/devices/push', body: {'apns_token': apnsToken});
+
   static Future<({Device device, String token})> registerDevice({
     required String baseUrl,
     required String name,
