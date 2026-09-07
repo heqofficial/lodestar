@@ -20,6 +20,10 @@ class ApiClient {
   final String token;
   final http.Client _http;
 
+  /// Every request must answer (or fail) within this window; a hung server
+  /// must never hang the app.
+  static const timeout = Duration(seconds: 15);
+
   Uri _u(String path, [Map<String, String>? query]) =>
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
 
@@ -38,11 +42,17 @@ class ApiClient {
     if (body != null) {
       req.body = jsonEncode(body);
     }
-    final streamed = await _http.send(req);
-    final resp = await http.Response.fromStream(streamed);
-    final decoded = resp.body.isEmpty
-        ? <String, dynamic>{}
-        : jsonDecode(resp.body) as Map<String, dynamic>;
+    final streamed = await _http.send(req).timeout(timeout);
+    final resp = await http.Response.fromStream(streamed).timeout(timeout);
+    final Map<String, dynamic> decoded;
+    try {
+      decoded = resp.body.isEmpty
+          ? <String, dynamic>{}
+          : jsonDecode(resp.body) as Map<String, dynamic>;
+    } on FormatException {
+      // Non-JSON error body (proxy error page, etc.) — surface the status.
+      throw ApiException(resp.statusCode, 'HTTP ${resp.statusCode}');
+    }
     if (resp.statusCode >= 400) {
       throw ApiException(
         resp.statusCode,
@@ -62,15 +72,17 @@ class ApiClient {
   }) async {
     final client = http.Client();
     try {
-      final resp = await client.post(
-        Uri.parse('$baseUrl/api/v1/devices'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'name': name,
-          'ed25519_pub': ed25519Pub,
-          'x25519_pub': x25519Pub,
-        }),
-      );
+      final resp = await client
+          .post(
+            Uri.parse('$baseUrl/api/v1/devices'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'name': name,
+              'ed25519_pub': ed25519Pub,
+              'x25519_pub': x25519Pub,
+            }),
+          )
+          .timeout(timeout);
       if (resp.statusCode != 201) {
         throw ApiException(
           resp.statusCode,
@@ -212,11 +224,16 @@ class ApiClient {
   // --- websocket -----------------------------------------------------------
 
   /// Opens a live envelope stream for [circleId].
+  ///
+  /// Pings every 25s so the server's 90s idle deadline never fires on a
+  /// healthy connection (prevents reconnect churn).
   Stream<Envelope> liveStream(String circleId) {
     final wsBase = baseUrl.replaceFirst(RegExp(r'^http'), 'ws');
     final channel = IOWebSocketChannel.connect(
       Uri.parse('$wsBase/api/v1/ws?circle=$circleId'),
       headers: {'Authorization': 'Bearer $token'},
+      pingInterval: const Duration(seconds: 25),
+      connectTimeout: timeout,
     );
     return channel.stream.map((raw) {
       final j = jsonDecode(raw as String) as Map<String, dynamic>;

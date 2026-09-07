@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +18,7 @@ import (
 	"github.com/heqofficial/lodestar/server/internal/store"
 )
 
-func newTestServer(t *testing.T) (*Server, *store.Store) {
+func newTestServer(t testing.TB) (*Server, *store.Store) {
 	t.Helper()
 	st, err := store.Open(t.TempDir() + "/test.db")
 	if err != nil {
@@ -28,7 +29,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store) {
 	return s, st
 }
 
-func doJSON(t *testing.T, s *Server, method, path, token string, body any) (*http.Response, map[string]any) {
+func doJSON(t testing.TB, s *Server, method, path, token string, body any) (*http.Response, map[string]any) {
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -51,7 +52,7 @@ func doJSON(t *testing.T, s *Server, method, path, token string, body any) (*htt
 	return resp, out
 }
 
-func register(t *testing.T, s *Server, name string) (deviceID, token string) {
+func register(t testing.TB, s *Server, name string) (deviceID, token string) {
 	t.Helper()
 	resp, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
 		"name":        name,
@@ -65,7 +66,7 @@ func register(t *testing.T, s *Server, name string) (deviceID, token string) {
 	return dev["id"].(string), out["token"].(string)
 }
 
-func createCircle(t *testing.T, s *Server, token, name string) string {
+func createCircle(t testing.TB, s *Server, token, name string) string {
 	t.Helper()
 	resp, out := doJSON(t, s, "POST", "/api/v1/circles", token, map[string]any{"name": name})
 	if resp.StatusCode != http.StatusCreated {
@@ -74,11 +75,11 @@ func createCircle(t *testing.T, s *Server, token, name string) string {
 	return out["id"].(string)
 }
 
-func postEnvelope(t *testing.T, s *Server, token, circleID, kind string) {
+func postEnvelope(t testing.TB, s *Server, token, circleID, kind string) {
 	t.Helper()
 	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", token, map[string]any{
 		"kind": kind, "ts": time.Now().UnixMilli(),
-		"nonce": "AB12", "ciphertext": "c2lnaHQ=",
+		"nonce": fmt.Sprintf("n-%s-%d", kind, time.Now().UnixNano()%1e9), "ciphertext": "c2lnaHQ=",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("post envelope: status %d", resp.StatusCode)
@@ -300,7 +301,7 @@ func TestWebSocketFanout(t *testing.T) {
 	}
 }
 
-func mustInvite(t *testing.T, s *Server, token, circleID string) string {
+func mustInvite(t testing.TB, s *Server, token, circleID string) string {
 	t.Helper()
 	resp, out := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/invites", token, map[string]any{"ttl_hours": 24})
 	if resp.StatusCode != http.StatusCreated {
@@ -380,4 +381,224 @@ func TestRateLimiting(t *testing.T) {
 	if status != http.StatusTooManyRequests {
 		t.Errorf("expected rate limit, last status %d", status)
 	}
+}
+
+// --- hostile-input tests ---------------------------------------------------
+
+func TestKeyBlobForNonMemberRejected(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	circleID := createCircle(t, s, aliceTok, "C")
+
+	// Bob is not a member: he must not be able to write a key blob at all.
+	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/keys", bobTok, map[string]any{
+		"for_device": "alice-device-id", "ciphertext": "evil",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-member key write: got %d, want 403", resp.StatusCode)
+	}
+
+	// Alice is a member but may only address blobs to actual members.
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/keys", aliceTok, map[string]any{
+		"for_device": "not-a-member", "ciphertext": "evil",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("key write to non-member: got %d, want 403", resp.StatusCode)
+	}
+	// ...but she may address the owner's own blob (herself).
+	aliceID, _ := s.store.Members(circleID)
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/keys", aliceTok, map[string]any{
+		"for_device": aliceID[0].DeviceID, "ciphertext": "legit",
+	})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("legit key write: got %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestLocationKindThrottle(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Spammer")
+	circleID := createCircle(t, s, tok, "C")
+	limited := false
+	for i := 0; i < 40; i++ {
+		resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+			"kind": "location", "ts": time.Now().UnixMilli(),
+			"nonce": fmt.Sprintf("n-%d", i), "ciphertext": "c2lnaHQ=",
+		})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Error("expected location kind throttle to kick in")
+	}
+}
+
+func TestEnvelopeReplayIdempotent(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "C")
+	body := map[string]any{
+		"kind": "checkin", "ts": time.Now().UnixMilli(),
+		"nonce": "replay-nonce", "ciphertext": "c2lnaHQ=",
+	}
+	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first post: %d", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("replay post: got %d, want 201 (idempotent)", resp.StatusCode)
+	}
+	resp, out := doJSON(t, s, "GET", "/api/v1/circles/"+circleID+"/envelopes", tok, nil)
+	envs := out["envelopes"].([]any)
+	if len(envs) != 1 {
+		t.Errorf("after replay: %d rows, want 1", len(envs))
+	}
+	_ = resp
+}
+
+func TestRegisterSanitizesControlChars(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
+		"name": "Bad\nName\tDevice\r", "ed25519_pub": "e", "x25519_pub": "x",
+	})
+	if out["device"] == nil {
+		t.Fatal("registration failed")
+	}
+	name := out["device"].(map[string]any)["name"].(string)
+	if strings.ContainsAny(name, "\n\t\r") {
+		t.Errorf("control characters survived sanitization: %q", name)
+	}
+	if name != "BadNameDevice" {
+		t.Errorf("name = %q, want BadNameDevice", name)
+	}
+}
+
+func TestPanicRecoveryKeepsServing(t *testing.T) {
+	s, _ := newTestServer(t)
+	// The recoverer wraps the real mux; prove a panicking handler is
+	// converted to a 500 and the server survives.
+	panicky := recoverer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	panicky.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("panic: got %d, want 500", rec.Code)
+	}
+	// Still serving normally afterwards.
+	resp, _ := doJSON(t, s, "GET", "/healthz", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("healthz after panic: %d", resp.StatusCode)
+	}
+}
+
+func TestAdminTokenRequired(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s := New(st, push.NewMulti(nil), "s3cret", []string{"sos"})
+
+	resp, _ := doJSON(t, s, "GET", "/admin", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: got %d, want 401", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, s, "GET", "/admin?token=wrong", "", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong token: got %d, want 401", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, s, "GET", "/admin?token=s3cret", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("right token: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestRemoveMemberKicksWebSocket(t *testing.T) {
+	s, _ := newTestServer(t)
+	aliceID, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	circleID := createCircle(t, s, aliceTok, "C")
+	if _, out := doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)}); out["id"] == nil {
+		t.Fatal("bob join failed")
+	}
+
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws?circle=" + circleID
+	conn, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + bobTok}},
+	})
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	time.Sleep(100 * time.Millisecond) // let the subscription land
+
+	// Alice (owner) removes Bob while his socket is open.
+	resp, _ := doJSON(t, s, "DELETE", "/api/v1/circles/"+circleID+"/members/"+bobID(t, s, circleID, "Bob"), aliceTok, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove bob: %d", resp.StatusCode)
+	}
+	_ = aliceID
+
+	// Bob's socket must be closed server-side: reads now error out.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var got map[string]any
+	if err := wsjson.Read(ctx, conn, &got); err == nil {
+		t.Error("removed member's socket still readable — revocation failed")
+	}
+}
+
+func bobID(t *testing.T, s *Server, circleID, name string) string {
+	t.Helper()
+	members, err := s.store.Members(circleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if m.DisplayName == name {
+			return m.DeviceID
+		}
+	}
+	t.Fatalf("member %s not found", name)
+	return "" // unreachable; Fatalf does not return
+}
+
+// Fuzz targets — run with `go test -fuzz=Fuzz -fuzztime=10s ./internal/api`.
+
+func FuzzRegisterDevice(f *testing.F) {
+	s, _ := newTestServer(f)
+	f.Add("Alice", "edpub", "xpub")
+	f.Fuzz(func(t *testing.T, name, edpub, xpub string) {
+		resp, _ := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
+			"name": name, "ed25519_pub": edpub, "x25519_pub": xpub,
+		})
+		// 201 (ok), 400 (invalid), 429 (rate limited) are all fine; 5xx is not.
+		if resp.StatusCode >= 500 {
+			t.Errorf("fuzz input %q → %d", name, resp.StatusCode)
+		}
+	})
+}
+
+func FuzzPostEnvelope(f *testing.F) {
+	s, _ := newTestServer(f)
+	_, tok := register(f, s, "Alice")
+	circleID := createCircle(f, s, tok, "C")
+	f.Add("location", "abc", int64(1234567890))
+	f.Fuzz(func(t *testing.T, kind, nonce string, ts int64) {
+		resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+			"kind": kind, "ts": ts, "nonce": nonce, "ciphertext": "c2lnaHQ=",
+		})
+		// Any of these is fine; 5xx is not.
+		if resp.StatusCode >= 500 {
+			t.Errorf("fuzz input %q %q %d → %d", kind, nonce, ts, resp.StatusCode)
+		}
+	})
 }

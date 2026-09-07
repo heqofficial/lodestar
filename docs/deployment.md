@@ -58,11 +58,18 @@ All configuration is via env vars (or flags, see `./lodestard -h`):
 | `LODESTAR_NTFY_TOKEN` | (empty) | ntfy access token, if required |
 | `LODESTAR_ADMIN_TOKEN` | (empty) | If set, `/admin` requires `?token=` |
 | `LODESTAR_PUSH_KINDS` | `sos,geofence,crash` | Envelope kinds that trigger a push relay |
+| `LODESTAR_RETENTION_DAYS` | `90` | Prune location history older than N days (`0` = keep forever). `sos`/`crash` alerts are always kept |
 | `LODESTAR_APNS_KEY_PATH` | (empty) | APNs .p8 key path (enables iOS push — roadmap) |
 | `LODESTAR_APNS_TEAM_ID` | (empty) | Apple team ID |
 | `LODESTAR_APNS_KEY_ID` | (empty) | APNs key ID |
 | `LODESTAR_APNS_TOPIC` | (empty) | App bundle id (e.g. `dev.lodestar.app`) |
 | `LODESTAR_APNS_ENV` | `development` | `development` or `production` |
+
+## Data retention
+
+By default the server prunes location history older than **90 days** (hourly, on the envelope's own timestamp). Emergency alerts (`sos`, `crash`) are never pruned. To keep everything forever, set `LODESTAR_RETENTION_DAYS=0` — storage grows ~15–20 MB/year per actively-driving device (a handful of KiB per envelope).
+
+The server also enforces hard bounds so a single device can't bloat the DB: per-kind envelope throttles (30/min for location, 6/min for anything else), a 64 KiB envelope cap, and exact-duplicate rejection (retries are idempotent, replay doesn't duplicate rows).
 
 ## Upgrades & backups
 

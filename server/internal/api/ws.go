@@ -13,8 +13,9 @@ import (
 
 // Hub fans out envelope messages to connected circle sockets.
 type Hub struct {
-	mu   sync.RWMutex
-	subs map[string]map[*wsConn]struct{}
+	mu     sync.RWMutex
+	subs   map[string]map[*wsConn]struct{}
+	device map[*wsConn]string // conn -> device id (for revocation kicks)
 }
 
 // wsConn is one live socket subscription.
@@ -25,32 +26,57 @@ type wsConn struct {
 
 // NewHub creates an empty hub.
 func NewHub() *Hub {
-	return &Hub{subs: map[string]map[*wsConn]struct{}{}}
+	return &Hub{
+		subs:   map[string]map[*wsConn]struct{}{},
+		device: map[*wsConn]string{},
+	}
 }
 
 // Subscribe registers a connection for a circle.
-func (h *Hub) Subscribe(circleID string) *wsConn {
+func (h *Hub) Subscribe(circleID, deviceID string) *wsConn {
 	c := &wsConn{send: make(chan []byte, 256), done: make(chan struct{})}
 	h.mu.Lock()
 	if h.subs[circleID] == nil {
 		h.subs[circleID] = map[*wsConn]struct{}{}
 	}
 	h.subs[circleID][c] = struct{}{}
+	h.device[c] = deviceID
 	h.mu.Unlock()
 	return c
 }
 
-// Unsubscribe removes a connection.
+// Unsubscribe removes a connection. Idempotent: only the code that removes
+// a conn from the map closes its done channel, so Kick + deferred
+// Unsubscribe cannot double-close.
 func (h *Hub) Unsubscribe(circleID string, c *wsConn) {
 	h.mu.Lock()
-	if m, ok := h.subs[circleID]; ok {
-		delete(m, c)
-		if len(m) == 0 {
+	if _, ok := h.subs[circleID][c]; ok {
+		delete(h.subs[circleID], c)
+		if len(h.subs[circleID]) == 0 {
 			delete(h.subs, circleID)
 		}
+		delete(h.device, c)
+		close(c.done)
 	}
 	h.mu.Unlock()
-	close(c.done)
+}
+
+// Kick closes every live socket of deviceID in circleID. Called when a
+// member is removed or leaves, so a revoked member cannot keep receiving
+// the circle's location stream.
+func (h *Hub) Kick(circleID, deviceID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for c := range h.subs[circleID] {
+		if h.device[c] == deviceID {
+			delete(h.subs[circleID], c)
+			delete(h.device, c)
+			close(c.done)
+		}
+	}
+	if len(h.subs[circleID]) == 0 {
+		delete(h.subs, circleID)
+	}
 }
 
 // Broadcast queues msg to every socket in the circle, dropping full queues.
@@ -83,7 +109,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn := s.hub.Subscribe(circleID)
+	conn := s.hub.Subscribe(circleID, dev.ID)
 	defer s.hub.Unsubscribe(circleID, conn)
 
 	// Writer goroutine: drains the queue to the socket.
@@ -105,7 +131,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Reader loop: consume client pings/pongs; detect dead sockets.
+	// Reader loop: consume client pings/pongs; detect dead sockets. The
+	// app pings every ~25s, so an idle-but-alive socket never trips the
+	// 90s deadline.
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		var msg any

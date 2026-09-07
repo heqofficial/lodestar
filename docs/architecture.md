@@ -46,7 +46,16 @@ Places live in the app, not the server. Each device compares its own fixes again
 
 ## Live updates & push
 
-- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive.
+- **WebSocket** (`/api/v1/ws`) — the app keeps a socket open to the server; envelopes fan out to circle members in real time. On Android the tracking foreground service keeps this connection alive. The app pings every 25 s (the server's idle deadline is 90 s), and after any disconnect it re-fetches `latest` so the map never misses a fix.
+- **Immediate revocation** — removing a member closes their live socket server-side, so they stop receiving the circle stream the moment they're removed.
+
+## Server hardening
+
+- **Panic recovery** — a panicking handler becomes a 500; one bad request can never take down the server.
+- **Rate limits** — 120 req/min per device (global), 6 registrations/min per IP, and per-kind envelope throttles (30/min for `location`, 6/min for everything else) so a hostile member can't flood the DB. Limiter state is pruned when idle.
+- **Bounded storage** — 64 KiB envelope cap, exact-duplicate rejection (`circle, device, nonce` unique — retries are idempotent), and `LODESTAR_RETENTION_DAYS` pruning (default 90; `sos`/`crash` kept forever).
+- **Key-blob integrity** — key blobs may only be addressed to actual circle members.
+- **Admin token** compared in constant time; control characters stripped from display names.
 - **ntfy (optional)** — the server can relay SOS/check-in/geofence events to a self-hosted ntfy topic per circle (payload is the encrypted envelope — safe to relay anywhere). Members can install the ntfy app and subscribe for push while Lodestar isn't running. iOS in-app APNs is roadmap.
 - **No Firebase, no Google Play Services dependency** for messaging.
 

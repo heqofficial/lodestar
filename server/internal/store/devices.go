@@ -18,7 +18,6 @@ type Device struct {
 
 var (
 	// ErrNotFound is returned when a row does not exist.
-	ErrNotFound = errors.New("not found")
 	// ErrDuplicate is returned on unique-constraint violations.
 	ErrDuplicate = errors.New("duplicate")
 )

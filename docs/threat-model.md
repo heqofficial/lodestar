@@ -33,6 +33,10 @@ The server sees: who is a member of which circle, when each device posts envelop
 - A **stolen bearer token** lets an attacker read envelope *metadata* and post envelopes as that member; it does NOT let them read ciphertext.
 - A **stolen phone** (unlocked) grants full access to that member's circle content — same as stealing someone's unlocked phone with Life360 installed. The OS keystore protects keys when locked.
 - **Malicious member** can read everything in the circle (they have the key — they're family) and could post forged envelopes *as themselves*. Sender signatures prevent forging *as others*.
+- **Member removal is immediate**: a removed/left member's live WebSocket is closed server-side, so revocation takes effect instantly, not at their next read.
+- **Replay of old emergencies is rejected**: `sos`/`crash` envelopes older than 10 minutes (or more than 5 min in the future) are dropped on receipt, so even the server cannot re-alarm the circle with a stale alert. Routine kinds are not time-limited (history and late messages are legitimate).
+- **Server cannot poison key distribution**: key blobs may only be written for actual circle members, so a compromised member cannot overwrite another member's blob and brick their key fetch.
+- **Exact replay is idempotent**: the same `(circle, device, nonce)` can only be stored once — retries after lost responses don't duplicate rows, and replayed envelopes aren't re-broadcast.
 
 ## 3. Transport
 
@@ -53,7 +57,7 @@ The server sees: who is a member of which circle, when each device posts envelop
 | iOS background push | APNs requires Apple Developer account | Roadmap; Android covered by foreground service; ntfy app subscription works on iOS today |
 | Third-party audit | No funding yet | Reproducible builds + open code; audits welcome |
 | Malicious member screenshots your map | You trusted them with the key | Family context: you chose your circle |
-| Server-side spam/DoS | Self-hosted scale | Basic rate limiting per device; deploy behind your own reverse proxy |
+| Server-side spam/DoS | Self-hosted scale | Per-device + per-kind rate limiting (30/min location, 6/min others), 64 KiB envelope cap, circle member cap (64), 90-day retention pruning, bounded limiter memory; deploy behind your own reverse proxy |
 | Legal subpoena for ciphertext | Server can't decrypt anyway | Keep keys only on devices; offer key backup phrases members control |
 
 ## Cryptographic inventory
@@ -65,6 +69,7 @@ The server sees: who is a member of which circle, when each device posts envelop
 | HKDF-SHA256 | ECDH → shared sealing key | `cryptography` |
 | ChaCha20-Poly1305 | Envelope sealing (AEAD) | `cryptography` |
 | SHA-256 | Token hashing at rest | stdlib (Go) |
+| (constant-time compare) | `/admin` token check | stdlib (Go) |
 
 ## Reporting
 

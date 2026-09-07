@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,17 +70,10 @@ type Ntfy struct {
 // "http://localhost:80". token may be empty if the server is open.
 func NewNtfy(baseURL, token string) *Ntfy {
 	return &Ntfy{
-		baseURL: stringsTrimSuffix(baseURL, "/"),
+		baseURL: strings.TrimSuffix(baseURL, "/"),
 		token:   token,
 		client:  &http.Client{Timeout: 10 * time.Second},
 	}
-}
-
-func stringsTrimSuffix(s, suffix string) string {
-	if len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix {
-		return s[:len(s)-len(suffix)]
-	}
-	return s
 }
 
 // Send posts the payload to the topic.

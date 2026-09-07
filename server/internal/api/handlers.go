@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,16 @@ const (
 	maxNameLen       = 64
 	maxCirclePerUser = 32
 	maxMembers       = 64
+
+	// Per-kind envelope throttles (per device, per circle): the app posts
+	// at most ~4 location fixes/min, so generous headroom still stops a
+	// hostile member from flooding the DB at the full API rate.
+	locationKindPerMin = 30.0
+	otherKindPerMin    = 6.0
+
+	// Envelope timestamps must be within this skew of server time.
+	maxFutureSkewMs = 5 * 60_000
+	maxPastSkewMs   = 180 * 24 * 3600_000 // 180 days
 )
 
 func randID(n int) string {
@@ -42,7 +53,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if s.adminToken != "" {
-		if r.URL.Query().Get("token") != s.adminToken {
+		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(s.adminToken)) != 1 {
 			writeErr(w, http.StatusUnauthorized, "missing or bad admin token")
 			return
 		}
@@ -94,7 +105,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad json")
 		return
 	}
-	req.Name = strings.TrimSpace(req.Name)
+	req.Name = sanitizeName(req.Name)
 	if req.Name == "" {
 		req.Name = "My Device"
 	}
@@ -188,6 +199,10 @@ func (s *Server) handleJoinCircle(w http.ResponseWriter, r *http.Request) {
 	}
 	dev := deviceFrom(r.Context())
 	if err := s.store.AddMember(c.ID, dev.ID, ""); err != nil {
+		if errors.Is(err, store.ErrCircleFull) {
+			writeErr(w, http.StatusForbidden, "circle is full")
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "could not join")
 		return
 	}
@@ -249,8 +264,14 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown kind")
 		return
 	}
+	// Per-kind throttle: bounds DB growth even if the global limiter is
+	// bypassed, and stops kind-label spam (e.g. fake SOS alerts).
+	if !s.kindThrottle(req.Kind).allow(dev.ID) {
+		writeErr(w, http.StatusTooManyRequests, "kind rate limit exceeded")
+		return
+	}
 	now := time.Now().UnixMilli()
-	if req.TS <= 0 || req.TS > now+5*60_000 || req.TS < now-180*24*3600_000 {
+	if req.TS <= 0 || req.TS > now+maxFutureSkewMs || req.TS < now-maxPastSkewMs {
 		writeErr(w, http.StatusBadRequest, "ts out of range")
 		return
 	}
@@ -267,14 +288,17 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 		Nonce:      req.Nonce,
 		Ciphertext: req.Ciphertext,
 	}
-	stored, err := s.store.AddEnvelope(env)
+	stored, inserted, err := s.store.AddEnvelope(env)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store failed")
 		return
 	}
-	// Fan out to circle members over WebSocket.
+	// Fan out to circle members over WebSocket (idempotent retries that hit
+	// the dedup index are not re-broadcast).
 	payload, _ := json.Marshal(stored)
-	s.hub.Broadcast(circleID, payload)
+	if inserted {
+		s.hub.Broadcast(circleID, payload)
+	}
 	// Push alerts for high-signal kinds.
 	if s.pushKinds[req.Kind] && s.push != nil && s.push.Enabled() {
 		title := map[string]string{
@@ -349,6 +373,13 @@ func (s *Server) handlePutKeyBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ForDevice == "" || req.Ciphertext == "" {
 		writeErr(w, http.StatusBadRequest, "missing fields")
+		return
+	}
+	// Key blobs are the only path that distributes the circle key: only
+	// actual members may receive one, or any member could overwrite the
+	// owner's blobs (key poisoning) or exfiltrate to arbitrary devices.
+	if _, err := s.store.MemberRole(circleID, req.ForDevice); err != nil {
+		writeErr(w, http.StatusForbidden, "for_device is not a member")
 		return
 	}
 	if err := s.store.PutKeyBlob(circleID, req.ForDevice, req.Ciphertext); err != nil {
@@ -455,6 +486,9 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "member not found")
 		return
 	}
+	// Revoke live access immediately: a removed member's open socket must
+	// not keep receiving the circle's location stream.
+	s.hub.Kick(circleID, did)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -486,6 +520,17 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// sanitizeName trims and strips control characters (they would otherwise
+// flow into push titles and logs).
+func sanitizeName(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(s))
 }
 
 // newInviteCode generates a 6-char code from a small alphabet (no 0/O/1/I).

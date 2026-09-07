@@ -16,6 +16,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,9 @@ type Server struct {
 	regLimiter *rateLimiter // per-IP, for the unauthenticated register endpoint
 	startedAt  time.Time
 	pushKinds  map[string]bool
+
+	kindLimMu   sync.Mutex
+	kindLimiter map[string]*rateLimiter // per-kind throttles for envelope POSTs
 }
 
 // New constructs the API server. pushKinds lists envelope kinds that trigger
@@ -46,16 +50,50 @@ func New(st *store.Store, sender *push.Multi, adminToken string, pushKinds []str
 	for _, k := range pushKinds {
 		kinds[strings.TrimSpace(k)] = true
 	}
-	return &Server{
-		store:      st,
-		push:       sender,
-		hub:        NewHub(),
-		adminToken: adminToken,
-		limiter:    newRateLimiter(120, 240), // 120 req/min per device, burst 240
-		regLimiter: newRateLimiter(6, 12),    // 6 registrations/min per IP
-		startedAt:  time.Now(),
-		pushKinds:  kinds,
+	s := &Server{
+		store:       st,
+		push:        sender,
+		hub:         NewHub(),
+		adminToken:  adminToken,
+		limiter:     newRateLimiter(120, 240), // 120 req/min per device, burst 240
+		regLimiter:  newRateLimiter(6, 12),    // 6 registrations/min per IP
+		startedAt:   time.Now(),
+		pushKinds:   kinds,
+		kindLimiter: map[string]*rateLimiter{},
 	}
+	// Janitor: bound the memory of the token buckets (per-device entries
+	// for limiter/regLimiter, per-device-per-kind entries for kindLimiters).
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.limiter.prune()
+			s.regLimiter.prune()
+			s.kindLimMu.Lock()
+			for _, l := range s.kindLimiter {
+				l.prune()
+			}
+			s.kindLimMu.Unlock()
+		}
+	}()
+	return s
+}
+
+// kindThrottle returns the throttle for an envelope kind, creating it with
+// the kind-appropriate rate on first use.
+func (s *Server) kindThrottle(kind string) *rateLimiter {
+	rate := otherKindPerMin
+	if kind == "location" {
+		rate = locationKindPerMin
+	}
+	s.kindLimMu.Lock()
+	defer s.kindLimMu.Unlock()
+	l, ok := s.kindLimiter[kind]
+	if !ok {
+		l = newRateLimiter(rate, rate)
+		s.kindLimiter[kind] = l
+	}
+	return l
 }
 
 // Handler returns the root http.Handler.
@@ -81,7 +119,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/circles/{id}/members/{did}", s.auth(s.handleRemoveMember))
 	mux.HandleFunc("GET /api/v1/ws", s.auth(s.handleWebSocket))
 
-	return logRequests(corsHeaders(mux))
+	return recoverer(logRequests(corsHeaders(mux)))
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +133,20 @@ const ctxDeviceKey ctxKey = 0
 func deviceFrom(ctx context.Context) *store.Device {
 	d, _ := ctx.Value(ctxDeviceKey).(*store.Device)
 	return d
+}
+
+// recoverer converts handler panics into 500s so one bad request cannot
+// take down the whole server.
+func recoverer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic serving %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				writeErr(w, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // auth resolves the Bearer token to a device and applies rate limiting.
@@ -175,7 +227,7 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// rateLimiter is a small in-memory token bucket per device.
+// rateLimiter is a small in-memory token bucket per key.
 type rateLimiter struct {
 	mu    sync.Mutex
 	rate  float64
@@ -184,10 +236,24 @@ type rateLimiter struct {
 	last  map[string]time.Time
 }
 
+// prune drops entries idle for over maxIdle, bounding memory when keys
+// churn (rotating client IPs, many devices).
+func (rl *rateLimiter) prune() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	const maxIdle = 30 * time.Minute
+	now := time.Now()
+	for k, t := range rl.last {
+		if now.Sub(t) > maxIdle {
+			delete(rl.toks, k)
+			delete(rl.last, k)
+		}
+	}
+}
+
 func newRateLimiter(rate, burst float64) *rateLimiter {
 	return &rateLimiter{rate: rate, burst: burst, toks: map[string]float64{}, last: map[string]time.Time{}}
 }
-
 func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

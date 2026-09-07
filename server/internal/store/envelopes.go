@@ -35,18 +35,33 @@ type Envelope struct {
 	CreatedAt  int64  `json:"created_at"` // server receive time, unix ms
 }
 
-// AddEnvelope stores an envelope and returns the stored copy.
-func (s *Store) AddEnvelope(e Envelope) (Envelope, error) {
+// AddEnvelope stores an envelope and returns the stored copy. Duplicates
+// (same circle + device + nonce — e.g. a client retry after a lost response)
+// are ignored: returns (e, false) without inserting.
+func (s *Store) AddEnvelope(e Envelope) (Envelope, bool, error) {
 	if e.CreatedAt == 0 {
 		e.CreatedAt = nowMS()
 	}
-	_, err := s.db.Exec(`INSERT INTO envelopes (id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at)
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO envelopes (id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.CircleID, e.DeviceID, e.Kind, e.TS, e.Nonce, e.Ciphertext, e.CreatedAt)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("add envelope: %w", err)
+		return Envelope{}, false, fmt.Errorf("add envelope: %w", err)
 	}
-	return e, nil
+	n, _ := res.RowsAffected()
+	return e, n > 0, nil
+}
+
+// PruneEnvelopes deletes envelopes older than beforeMS, except emergency
+// alerts (sos/crash) which are kept for the lifetime of the deployment.
+// Returns the number of rows deleted.
+func (s *Store) PruneEnvelopes(beforeMS int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM envelopes WHERE ts < ? AND kind NOT IN ('sos', 'crash')`, beforeMS)
+	if err != nil {
+		return 0, fmt.Errorf("prune envelopes: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // Envelopes fetches envelopes for a circle, newest first, with optional

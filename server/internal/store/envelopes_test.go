@@ -17,17 +17,20 @@ func openTestStore(t *testing.T) *Store {
 func TestEnvelopeLimitClamp(t *testing.T) {
 	s := openTestStore(t)
 	for i := 0; i < 105; i++ {
-		_, err := s.AddEnvelope(Envelope{
+		_, inserted, err := s.AddEnvelope(Envelope{
 			ID:         "env-" + string(rune('a'+i%26)) + string(rune('0'+i/10)) + string(rune('0'+i%10)),
 			CircleID:   "c1",
 			DeviceID:   "d1",
 			Kind:       "location",
 			TS:         int64(1000 + i),
-			Nonce:      "n",
+			Nonce:      "n-" + string(rune('a'+i%26)) + string(rune('0'+i/10)) + string(rune('0'+i%10)),
 			Ciphertext: "c",
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !inserted {
+			t.Fatalf("envelope %d reported as duplicate", i)
 		}
 	}
 	// limit > 1000 is clamped to 1000, not to 100.
@@ -56,6 +59,77 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 	}
 }
 
+func TestEnvelopeDedup(t *testing.T) {
+	s := openTestStore(t)
+	base := Envelope{
+		ID:         "e1",
+		CircleID:   "c1",
+		DeviceID:   "d1",
+		Kind:       "location",
+		TS:         1000,
+		Nonce:      "same-nonce",
+		Ciphertext: "same-cipher",
+	}
+	if _, inserted, err := s.AddEnvelope(base); err != nil || !inserted {
+		t.Fatalf("first insert: inserted=%v err=%v", inserted, err)
+	}
+	// Exact replay (same device+nonce, different id — a retry after a lost
+	// response) must not duplicate the row.
+	base.ID = "e2"
+	if _, inserted, err := s.AddEnvelope(base); err != nil || inserted {
+		t.Fatalf("duplicate insert: inserted=%v err=%v (want ignored)", inserted, err)
+	}
+	envs, err := s.Envelopes("c1", 0, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 1 {
+		t.Errorf("got %d rows, want 1 (replay must be idempotent)", len(envs))
+	}
+	// Same nonce from a different device is NOT a duplicate.
+	base.ID, base.DeviceID = "e3", "d2"
+	if _, inserted, err := s.AddEnvelope(base); err != nil || !inserted {
+		t.Fatalf("same nonce, other device: inserted=%v err=%v", inserted, err)
+	}
+}
+
+func TestPruneRetention(t *testing.T) {
+	s := openTestStore(t)
+	old := int64(1_000_000)
+	now := int64(9_000_000_000)
+	envs := []Envelope{
+		{ID: "a", CircleID: "c1", DeviceID: "d1", Kind: "location", TS: old, Nonce: "n1", Ciphertext: "c"},
+		{ID: "b", CircleID: "c1", DeviceID: "d1", Kind: "message", TS: old, Nonce: "n2", Ciphertext: "c"},
+		{ID: "c", CircleID: "c1", DeviceID: "d1", Kind: "sos", TS: old, Nonce: "n3", Ciphertext: "c"},
+		{ID: "d", CircleID: "c1", DeviceID: "d1", Kind: "crash", TS: old, Nonce: "n4", Ciphertext: "c"},
+		{ID: "e", CircleID: "c1", DeviceID: "d1", Kind: "location", TS: now, Nonce: "n5", Ciphertext: "c"},
+	}
+	for _, e := range envs {
+		if _, _, err := s.AddEnvelope(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.PruneEnvelopes(old + 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("pruned %d, want 2 (location+message; sos/crash kept)", n)
+	}
+	left, err := s.Envelopes("c1", 0, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 3 {
+		t.Errorf("remaining %d, want 3 (sos, crash, fresh location)", len(left))
+	}
+	for _, e := range left {
+		if e.ID == "a" || e.ID == "b" {
+			t.Errorf("old %s envelope survived pruning", e.Kind)
+		}
+	}
+}
+
 func TestEnvelopeRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	want := Envelope{
@@ -67,7 +141,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 		Nonce:      "nonce-value",
 		Ciphertext: "cipher-value",
 	}
-	if _, err := s.AddEnvelope(want); err != nil {
+	if _, _, err := s.AddEnvelope(want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Envelopes("c1", 0, "message", 10)
@@ -104,5 +178,27 @@ func TestCircleKeyBlobRoundTrip(t *testing.T) {
 	}
 	if _, err := s.KeyBlob("c1", "nobody"); err != ErrNotFound {
 		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestAddMemberCap(t *testing.T) {
+	s := openTestStore(t)
+	c := Circle{ID: "c1", Name: "full", Color: "#fff", OwnerDeviceID: "owner", InviteCode: "AAAAAA", CreatedAt: 1}
+	if err := s.CreateCircle(c, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Owner already counts toward the cap, so fill up to MaxMembers total.
+	for i := 0; i < MaxMembers-1; i++ {
+		if err := s.AddMember("c1", "d"+string(rune('a'+i%26))+string(rune('0'+i/10))+string(rune('0'+i%10)), ""); err != nil {
+			t.Fatalf("member %d: %v", i, err)
+		}
+	}
+	// Cap reached: new member rejected.
+	if err := s.AddMember("c1", "outsider", ""); err != ErrCircleFull {
+		t.Errorf("got %v, want ErrCircleFull", err)
+	}
+	// Existing members may still re-join (idempotent).
+	if err := s.AddMember("c1", "da00", ""); err != nil {
+		t.Errorf("rejoin at cap: %v", err)
 	}
 }

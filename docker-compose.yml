@@ -13,6 +13,7 @@ services:
       # LODESTAR_NTFY_TOKEN: ""               # ntfy access token, if required
       # LODESTAR_ADMIN_TOKEN: ""              # protects /admin
       # LODESTAR_PUSH_KINDS: "sos,geofence,crash"
+      # LODESTAR_RETENTION_DAYS: "90"         # prune history older than N days (0 = keep forever)
     volumes:
       - ./data:/data
 

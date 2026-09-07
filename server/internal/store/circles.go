@@ -6,6 +6,9 @@ import (
 	"fmt"
 )
 
+// MaxMembers caps how many devices may share one circle.
+const MaxMembers = 64
+
 // Circle is a family circle.
 type Circle struct {
 	ID            string `json:"id"`
@@ -116,8 +119,17 @@ func (s *Store) CirclesForDevice(deviceID string) ([]Circle, error) {
 	return out, rows.Err()
 }
 
-// AddMember joins a device to a circle.
+// AddMember joins a device to a circle. Idempotent for existing members;
+// rejects joins beyond the circle's member cap.
 func (s *Store) AddMember(circleID, deviceID, avatarColor string) error {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM circle_members WHERE circle_id = ? AND device_id != ?`,
+		circleID, deviceID).Scan(&n); err != nil {
+		return fmt.Errorf("add member count: %w", err)
+	}
+	if n >= MaxMembers {
+		return ErrCircleFull
+	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO circle_members (circle_id, device_id, role, avatar_color, sharing_enabled, joined_at)
 		VALUES (?, ?, 'member', ?, 1, ?)`, circleID, deviceID, avatarColor, nowMS())
 	if err != nil {

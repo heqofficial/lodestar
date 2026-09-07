@@ -15,6 +15,19 @@ import '../core/tracking/crash_detector.dart';
 import '../core/tracking/geofence_engine.dart';
 import '../core/tracking/trip_detector.dart';
 
+/// Replay staleness policy for emergency alerts.
+///
+/// The server relays signed envelopes but can replay old ones; a replayed
+/// SOS or crash would otherwise alarm the circle for nothing. Anything
+/// outside a 10-minute window (or more than 5 minutes in the future, i.e.
+/// clock skew) is dropped. Routine kinds (location, chat, trips) are
+/// deliberately not time-limited — history and late messages are normal.
+bool isStaleAlert(String kind, int ts, int nowMs) {
+  if (kind != 'sos' && kind != 'crash') return false;
+  final age = nowMs - ts;
+  return age > 10 * 60 * 1000 || age < -5 * 60 * 1000;
+}
+
 /// Single source of truth for the UI: identity, circles, live positions,
 /// chat, places, SOS/check-in state, and the tracking loop.
 class AppState extends ChangeNotifier {
@@ -381,6 +394,11 @@ class AppState extends ChangeNotifier {
     await _db?.upsertEnvelope(env);
     final key = await crypto.circleKey(env.circleId);
     if (key == null) {
+      // Bounded queue: a chatty circle must not be able to exhaust memory
+      // on a joiner who has no key yet (drop the oldest).
+      if (_pending.length >= 1000) {
+        _pending.removeAt(0);
+      }
       _pending.add(env);
       return;
     }
@@ -395,6 +413,13 @@ class AppState extends ChangeNotifier {
         ciphertextB64: env.ciphertext,
         senderPubEd25519B64: sender.ed25519Pub,
       );
+      // The inner kind/ts are signed by the sender; the server could replay
+      // an old emergency alert, so drop stale ones before they alarm anyone.
+      final kind = open['kind'] as String? ?? '';
+      final ts = (open['ts'] as num?)?.toInt() ?? 0;
+      if (isStaleAlert(kind, ts, DateTime.now().millisecondsSinceEpoch)) {
+        return;
+      }
       _dispatch(env.circleId, open);
     } catch (_) {
       // Tampered or not decryptable with current key — ignore.
@@ -441,11 +466,13 @@ class AppState extends ChangeNotifier {
       case 'place_del':
         places.remove(data['id']);
       case 'message':
-        chatByCircle.putIfAbsent(circleId, () => []).add((
-          deviceId: sender,
-          text: data['text'] as String? ?? '',
-          ts: ts,
-        ));
+        final list = chatByCircle.putIfAbsent(
+          circleId,
+          () => [],
+        )..add((deviceId: sender, text: data['text'] as String? ?? '', ts: ts));
+        if (list.length > 500) {
+          list.removeRange(0, list.length - 500);
+        }
       case 'checkin':
         events.insert(0, (
           deviceId: sender,
@@ -512,6 +539,8 @@ class AppState extends ChangeNotifier {
     while (!_disposed && activeCircleId == circleId) {
       try {
         _wsSub = api.liveStream(circleId).listen((env) {
+          // Ignore stragglers from a previous circle's socket.
+          if (env.circleId != circleId) return;
           unawaited(_ingest(env));
         });
         await _wsSub!.asFuture<void>().catchError((_) => null);
@@ -519,6 +548,16 @@ class AppState extends ChangeNotifier {
         // fallthrough to reconnect
       }
       if (_disposed || activeCircleId != circleId) return;
+      // Catch up on anything missed while the socket was down before
+      // reconnecting, so the map never goes stale after a drop.
+      try {
+        final envs = await api.latestEnvelopes(circleId);
+        for (final env in envs) {
+          if (env.circleId == circleId) await _ingest(env);
+        }
+      } catch (_) {
+        // offline — reconnect and retry
+      }
       await Future<void>.delayed(const Duration(seconds: 5));
     }
   }
@@ -598,7 +637,7 @@ class AppState extends ChangeNotifier {
     if (events.length > 200) {
       events.removeRange(200, events.length);
     }
-    unawaited(_postDataEnvelope(circleId, 'trip', trip.toData()));
+    unawaited(_postDataEnvelopeSafe(circleId, 'trip', trip.toData()));
     notifyListeners();
   }
 
@@ -620,7 +659,9 @@ class AppState extends ChangeNotifier {
     if (events.length > 200) {
       events.removeRange(200, events.length);
     }
-    unawaited(_postDataEnvelope(circleId, 'crash', {'lat': lat, 'lng': lng}));
+    unawaited(
+      _postDataEnvelopeSafe(circleId, 'crash', {'lat': lat, 'lng': lng}),
+    );
     notifyListeners();
   }
 
@@ -663,21 +704,29 @@ class AppState extends ChangeNotifier {
     final circleId = activeCircleId;
     if (circleId == null) return;
     unawaited(() async {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final sealed = await crypto.sealEnvelope(
-        circleId: circleId,
-        deviceId: deviceId,
-        kind: 'geofence',
-        ts: now,
-        data: {'place_id': place.id, 'place_name': place.name, 'event': event},
-      );
-      await api.postEnvelope(
-        circleId: circleId,
-        kind: 'geofence',
-        ts: now,
-        nonce: sealed.nonce,
-        ciphertext: sealed.ciphertext,
-      );
+      try {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final sealed = await crypto.sealEnvelope(
+          circleId: circleId,
+          deviceId: deviceId,
+          kind: 'geofence',
+          ts: now,
+          data: {
+            'place_id': place.id,
+            'place_name': place.name,
+            'event': event,
+          },
+        );
+        await api.postEnvelope(
+          circleId: circleId,
+          kind: 'geofence',
+          ts: now,
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+        );
+      } catch (_) {
+        // Offline — the next crossing will re-announce.
+      }
     }());
   }
 
@@ -703,7 +752,12 @@ class AppState extends ChangeNotifier {
       ts: DateTime.now().millisecondsSinceEpoch,
     );
     places[id] = place;
-    await _postDataEnvelope(circleId, 'place', place.toData());
+    try {
+      await _postDataEnvelope(circleId, 'place', place.toData());
+    } catch (_) {
+      // Offline: the place still applies locally; other members sync it
+      // when it eventually posts.
+    }
     _geofence = GeofenceEngine(
       places: places.values.toList(),
       onEvent: _onGeofenceEvent,
@@ -715,7 +769,9 @@ class AppState extends ChangeNotifier {
     final circleId = activeCircleId;
     if (circleId == null) return;
     places.remove(id);
-    await _postDataEnvelope(circleId, 'place_del', {'id': id});
+    try {
+      await _postDataEnvelope(circleId, 'place_del', {'id': id});
+    } catch (_) {}
     _geofence = GeofenceEngine(
       places: places.values.toList(),
       onEvent: _onGeofenceEvent,
@@ -732,7 +788,11 @@ class AppState extends ChangeNotifier {
       text: text.trim(),
       ts: now,
     ));
-    await _postDataEnvelope(circleId, 'message', {'text': text.trim()});
+    try {
+      await _postDataEnvelope(circleId, 'message', {'text': text.trim()});
+    } catch (_) {
+      // Offline: the message stays visible locally; retry on next send.
+    }
     notifyListeners();
   }
 
@@ -746,7 +806,9 @@ class AppState extends ChangeNotifier {
       text: note.isEmpty ? 'checked in' : note,
       ts: now,
     ));
-    await _postDataEnvelope(circleId, 'checkin', {'text': note});
+    try {
+      await _postDataEnvelope(circleId, 'checkin', {'text': note});
+    } catch (_) {}
     notifyListeners();
   }
 
@@ -761,11 +823,13 @@ class AppState extends ChangeNotifier {
       text: note.isEmpty ? 'SOS' : note,
       ts: now,
     ));
-    await _postDataEnvelope(circleId, 'sos', {
-      'text': note,
-      if (pos != null) 'lat': pos.lat,
-      if (pos != null) 'lng': pos.lng,
-    });
+    try {
+      await _postDataEnvelope(circleId, 'sos', {
+        'text': note,
+        if (pos != null) 'lat': pos.lat,
+        if (pos != null) 'lng': pos.lng,
+      });
+    } catch (_) {}
     notifyListeners();
   }
 
@@ -789,6 +853,20 @@ class AppState extends ChangeNotifier {
       nonce: sealed.nonce,
       ciphertext: sealed.ciphertext,
     );
+  }
+
+  /// Fire-and-forget variant for background paths (trip end, crash alert):
+  /// failures must never become unhandled async errors.
+  Future<void> _postDataEnvelopeSafe(
+    String circleId,
+    String kind,
+    Map<String, dynamic> data,
+  ) async {
+    try {
+      await _postDataEnvelope(circleId, kind, data);
+    } catch (_) {
+      // Emergency alerts are best-effort; the next one will retry.
+    }
   }
 
   // -------------------------------------------------------------------------

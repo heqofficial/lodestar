@@ -6,6 +6,7 @@ import 'package:lodestar/core/api/models.dart';
 import 'package:lodestar/core/crypto/crypto_service.dart';
 import 'package:lodestar/core/geo.dart';
 import 'package:lodestar/core/tracking/geofence_engine.dart';
+import 'package:lodestar/state/app_state.dart';
 
 /// In-memory key store so tests never touch the OS keystore.
 class _FakeKeyStore implements KeyStore {
@@ -109,6 +110,131 @@ void main() {
         owner.x25519PubB64,
       );
       expect(base64Decode(opened), circleKey);
+    });
+
+    test('no nonce reuse across seals', () async {
+      final c = newTestCrypto();
+      await c.init();
+      final key = await c.newCircleKey();
+      await c.saveCircleKey('c1', key);
+
+      final seen = <String>{};
+      for (var i = 0; i < 50; i++) {
+        final sealed = await c.sealEnvelope(
+          circleId: 'c1',
+          deviceId: 'd',
+          kind: 'location',
+          ts: i,
+          data: {'lat': 1.0, 'lng': 2.0},
+        );
+        expect(seen.add(sealed.nonce), isTrue, reason: 'nonce reused');
+      }
+    });
+
+    test('wrong circle key cannot decrypt', () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      final bob = newTestCrypto();
+      await bob.init();
+      await alice.saveCircleKey('c1', await alice.newCircleKey());
+      await bob.saveCircleKey('c1', await bob.newCircleKey()); // different key
+
+      final sealed = await alice.sealEnvelope(
+        circleId: 'c1',
+        deviceId: 'alice',
+        kind: 'location',
+        ts: 1,
+        data: {'lat': 1.0, 'lng': 2.0},
+      );
+      await expectLater(
+        bob.openEnvelope(
+          circleId: 'c1',
+          nonceB64: sealed.nonce,
+          ciphertextB64: sealed.ciphertext,
+          senderPubEd25519B64: alice.ed25519PubB64,
+        ),
+        throwsA(anything),
+      );
+    });
+
+    test('wrong sender key fails signature check', () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      final bob = newTestCrypto();
+      await bob.init();
+      final mallory = newTestCrypto();
+      await mallory.init();
+      final key = await alice.newCircleKey();
+      await alice.saveCircleKey('c1', key);
+      await bob.saveCircleKey('c1', key);
+
+      final sealed = await alice.sealEnvelope(
+        circleId: 'c1',
+        deviceId: 'alice',
+        kind: 'message',
+        ts: 1,
+        data: {'text': 'hi'},
+      );
+      // Bob tries to verify with Mallory's key instead of Alice's.
+      await expectLater(
+        bob.openEnvelope(
+          circleId: 'c1',
+          nonceB64: sealed.nonce,
+          ciphertextB64: sealed.ciphertext,
+          senderPubEd25519B64: mallory.ed25519PubB64,
+        ),
+        throwsA(anything),
+      );
+    });
+
+    test('truncated envelope is rejected as malformed', () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      final bob = newTestCrypto();
+      await bob.init();
+      final key = await alice.newCircleKey();
+      await alice.saveCircleKey('c1', key);
+      await bob.saveCircleKey('c1', key);
+
+      await expectLater(
+        bob.openEnvelope(
+          circleId: 'c1',
+          nonceB64: 'AAAA',
+          ciphertextB64: base64Encode([1, 2, 3]),
+          senderPubEd25519B64: alice.ed25519PubB64,
+        ),
+        throwsA(isA<FormatException>()),
+      );
+    });
+  });
+
+  group('isStaleAlert (replay policy)', () {
+    final now = 1_700_000_000_000;
+
+    test('fresh sos/crash passes', () {
+      expect(isStaleAlert('sos', now - 1000, now), isFalse);
+      expect(isStaleAlert('crash', now - 5 * 60 * 1000, now), isFalse);
+    });
+
+    test('replayed emergency is stale', () {
+      expect(isStaleAlert('sos', now - 11 * 60 * 1000, now), isTrue);
+      expect(isStaleAlert('crash', now - 60 * 60 * 1000, now), isTrue);
+    });
+
+    test('future-dated emergency is stale (clock skew)', () {
+      expect(isStaleAlert('sos', now + 10 * 60 * 1000, now), isTrue);
+    });
+
+    test('routine kinds are never stale', () {
+      expect(
+        isStaleAlert('location', now - 30 * 24 * 3600 * 1000, now),
+        isFalse,
+      );
+      expect(isStaleAlert('trip', now - 30 * 24 * 3600 * 1000, now), isFalse);
+      expect(
+        isStaleAlert('message', now - 30 * 24 * 3600 * 1000, now),
+        isFalse,
+      );
     });
   });
 

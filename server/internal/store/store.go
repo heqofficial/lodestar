@@ -9,10 +9,17 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
+)
+
+// Sentinel errors returned by the store.
+var (
+	ErrNotFound   = errors.New("not found")
+	ErrCircleFull = errors.New("circle is full")
 )
 
 // Store wraps the SQL database.
@@ -82,6 +89,9 @@ CREATE TABLE IF NOT EXISTS envelopes (
 );
 CREATE INDEX IF NOT EXISTS idx_env_circle_ts   ON envelopes(circle_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_env_circle_kind ON envelopes(circle_id, kind, ts DESC);
+-- Replay protection: the same (device, nonce) may only be stored once, so
+-- client retries after a lost response are idempotent instead of duplicating.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_env_dedup ON envelopes(circle_id, device_id, nonce);
 CREATE TABLE IF NOT EXISTS key_blobs (
 	circle_id  TEXT NOT NULL,
 	device_id  TEXT NOT NULL,
