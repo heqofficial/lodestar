@@ -822,7 +822,19 @@ func TestAPNsUnregisteredClearsToken(t *testing.T) {
 	if len(pushes) != 1 {
 		t.Fatalf("pushes = %+v, want only the topic broadcast (dead token must not record)", pushes)
 	}
-	// Apple said the token is dead — the server must have cleared it.
+	// Apple said the token is dead — the server must clear it. The clear
+	// happens in the push goroutine after the failed send, so poll.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d, err := st.DeviceByID(bobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.APNsToken == "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	d, err := st.DeviceByID(bobID)
 	if err != nil {
 		t.Fatal(err)
