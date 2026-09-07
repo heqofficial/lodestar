@@ -31,39 +31,47 @@ class AdaptiveTracker {
   int _lastPostedTs = 0;
 
   /// Requests permissions and starts the adaptive loop.
+  ///
+  /// On any failure (permission denied, service refused) the tracker must
+  /// return to the "not running" state: leaving `_running` true would make
+  /// every later start() a silent no-op while the UI believes it is on.
   Future<void> start() async {
     if (_running) return;
     _running = true;
+    try {
+      var perm = await _location.requestPermission();
+      if (perm == PermissionStatus.deniedForever) {
+        throw StateError('Location permission denied permanently');
+      }
+      if (perm == PermissionStatus.denied) {
+        perm = await _location.requestPermission();
+      }
+      if (perm != PermissionStatus.granted &&
+          perm != PermissionStatus.grantedLimited) {
+        throw StateError('Location permission required');
+      }
 
-    var perm = await _location.requestPermission();
-    if (perm == PermissionStatus.deniedForever) {
-      throw StateError('Location permission denied permanently');
-    }
-    if (perm == PermissionStatus.denied) {
-      perm = await _location.requestPermission();
-    }
-    if (perm != PermissionStatus.granted &&
-        perm != PermissionStatus.grantedLimited) {
-      throw StateError('Location permission required');
-    }
+      final serviceEnabled = await _location.serviceEnabled();
+      if (!serviceEnabled) {
+        await _location.requestService();
+      }
 
-    final serviceEnabled = await _location.serviceEnabled();
-    if (!serviceEnabled) {
-      await _location.requestService();
+      await _location.enableBackgroundMode();
+      await _location.changeNotificationOptions(
+        channelName: 'Lodestar tracking',
+        title: 'Lodestar',
+        subtitle: 'Sharing your location with your circle',
+        iconName: '@mipmap/ic_launcher',
+        description:
+            'Keeps your family informed while Lodestar runs in the background',
+      );
+
+      await _applyMode(_mode);
+      _sub = _location.onLocationChanged.listen(_handleFix);
+    } catch (_) {
+      _running = false;
+      rethrow;
     }
-
-    await _location.enableBackgroundMode();
-    await _location.changeNotificationOptions(
-      channelName: 'Lodestar tracking',
-      title: 'Lodestar',
-      subtitle: 'Sharing your location with your circle',
-      iconName: '@mipmap/ic_launcher',
-      description:
-          'Keeps your family informed while Lodestar runs in the background',
-    );
-
-    await _applyMode(_mode);
-    _sub = _location.onLocationChanged.listen(_handleFix);
   }
 
   Future<void> _applyMode(Mode mode) async {

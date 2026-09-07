@@ -8,6 +8,7 @@ import 'package:lodestar/core/geo.dart';
 import 'package:lodestar/core/platform/push_tokens.dart';
 import 'package:lodestar/core/tracking/geofence_engine.dart';
 import 'package:lodestar/state/app_state.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 /// In-memory key store so tests never touch the OS keystore.
 class _FakeKeyStore implements KeyStore {
@@ -25,6 +26,9 @@ class _FakeKeyStore implements KeyStore {
 CryptoService newTestCrypto() => CryptoService(_FakeKeyStore());
 
 void main() {
+  // AppState's LocalDb.open() path needs a database factory in tests.
+  sqfliteFfiInit();
+  databaseFactory = databaseFactoryFfi;
   group('CryptoService', () {
     test('identity survives init round-trip', () async {
       final c = newTestCrypto();
@@ -415,6 +419,119 @@ void main() {
     test('is a no-op off iOS and survives a missing channel', () async {
       PushTokenService.isIos = false;
       expect(await PushTokenService.apnsToken(), '');
+    });
+  });
+
+  group('AppState pending-key flush', () {
+    test('pre-grant envelopes are processed after the key arrives', () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      final joiner = newTestCrypto();
+      await joiner.init();
+
+      final circleKey = await alice.newCircleKey();
+      await alice.saveCircleKey('c1', circleKey);
+      final sealed = await alice.sealEnvelope(
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'location',
+        ts: 1000,
+        data: {'lat': 40.41, 'lng': -3.7, 'acc': 10, 'speed': 0},
+      );
+      final env = Envelope(
+        id: 'e1',
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'location',
+        ts: 1000,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+      );
+
+      final state = AppState(crypto: joiner); // joiner holds no circle key
+      state.deviceId = 'joiner-dev';
+      state.membersByCircle['c1'] = [
+        CircleMember(
+          circleId: 'c1',
+          deviceId: 'alice-dev',
+          role: 'member',
+          displayName: 'Alice',
+          avatarColor: '#4f7cff',
+          ed25519Pub: alice.ed25519PubB64,
+          x25519Pub: alice.x25519PubB64,
+          sharingEnabled: true,
+          joinedAt: 0,
+        ),
+      ];
+
+      // No circle key yet: the envelope must queue, not be dropped.
+      await state.ingestForTesting(env);
+      expect(state.positionsByDevice, isEmpty);
+
+      // Owner grants the key: flushing must process the queued envelope.
+      await joiner.saveCircleKey('c1', circleKey);
+      state.flushPendingForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(
+        state.positionsByDevice['alice-dev']?.lat,
+        closeTo(40.41, 1e-9),
+      );
+      state.dispose();
+    });
+
+    test('duplicate pre-key arrivals process only once after the grant',
+        () async {
+      final alice = newTestCrypto();
+      await alice.init();
+      final joiner = newTestCrypto();
+      await joiner.init();
+      final circleKey = await alice.newCircleKey();
+      await alice.saveCircleKey('c1', circleKey);
+      final sealed = await alice.sealEnvelope(
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'message',
+        ts: 1000,
+        data: {'text': 'hi'},
+      );
+      Envelope env(String id) => Envelope(
+        id: id,
+        circleId: 'c1',
+        deviceId: 'alice-dev',
+        kind: 'message',
+        ts: 1000,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+      );
+
+      final state = AppState(crypto: joiner);
+      state.deviceId = 'joiner-dev';
+      state.membersByCircle['c1'] = [
+        CircleMember(
+          circleId: 'c1',
+          deviceId: 'alice-dev',
+          role: 'member',
+          displayName: 'Alice',
+          avatarColor: '#4f7cff',
+          ed25519Pub: alice.ed25519PubB64,
+          x25519Pub: alice.x25519PubB64,
+          sharingEnabled: true,
+          joinedAt: 0,
+        ),
+      ];
+
+      // Socket relay + reconnect catch-up can both deliver the same
+      // envelope (the server stores one row, so its id is identical).
+      await state.ingestForTesting(env('e1'));
+      await state.ingestForTesting(env('e1'));
+      await joiner.saveCircleKey('c1', circleKey);
+      state.flushPendingForTesting();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      final msgs = state.chatByCircle['c1'] ?? [];
+      expect(msgs, hasLength(1)); // processed exactly once
+      expect(msgs.single.text, 'hi');
+      state.dispose();
     });
   });
 

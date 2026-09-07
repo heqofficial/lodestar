@@ -345,8 +345,10 @@ class AppState extends ChangeNotifier {
   }
 
   void _syncKeyFlag(String? circleId) {
-    // Async read; flag flips when the read completes.
+    // Async read; flag flips when the read completes. Never notify after
+    // dispose: the read can land during teardown (debug builds throw).
     unawaited(() async {
+      if (_disposed) return;
       hasCircleKey =
           circleId != null && await crypto.circleKey(circleId) != null;
       notifyListeners();
@@ -509,6 +511,12 @@ class AppState extends ChangeNotifier {
     if (key == null) {
       // Bounded queue: a chatty circle must not be able to exhaust memory
       // on a joiner who has no key yet (drop the oldest).
+      // NB: forget the replay-guard id here — _flushPending re-ingests the
+      // queued envelopes, and a still-seen id would skip every one of them
+      // (the flush was a silent no-op before this was fixed). The id is
+      // re-added the moment the envelope is actually processed, so a
+      // duplicate arriving pre-key only queues twice, never processes twice.
+      _seenIds.remove(env.id);
       if (_pending.length >= 1000) {
         _pending.removeAt(0);
       }
@@ -555,6 +563,14 @@ class AppState extends ChangeNotifier {
       unawaited(_ingest(env));
     }
   }
+
+  /// Test seam: feeds an envelope through the full ingest pipeline.
+  @visibleForTesting
+  Future<void> ingestForTesting(Envelope env) => _ingest(env);
+
+  /// Test seam: flushes the keyless-pending queue.
+  @visibleForTesting
+  void flushPendingForTesting() => _flushPending();
 
   /// Re-fetch the circle key from the server (used by the "Retry" button
   /// and by the housekeeping timer when the owner has granted access).

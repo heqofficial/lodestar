@@ -104,10 +104,12 @@ class MembersScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Members')),
       body: ListView.separated(
         padding: const EdgeInsets.all(16),
-        itemCount: members.length + 1,
+        // Invites are owner-only server-side; the card exists for owners
+        // only, so members never hit an unhandled 403 on tap.
+        itemCount: members.length + (isOwner ? 1 : 0),
         separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (context, i) {
-          if (i == 0) {
+          if (i == 0 && isOwner) {
             return Card(
               child: ListTile(
                 leading: const Icon(Icons.history, color: Color(0xFF4F7CFF)),
@@ -117,27 +119,35 @@ class MembersScreen extends StatelessWidget {
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () async {
-                  final code = await state.api.createInvite(
-                    state.activeCircleIdSafe,
-                  );
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Invite code: $code'),
-                        action: SnackBarAction(
-                          label: 'Copy',
-                          onPressed: () {
-                            Clipboard.setData(ClipboardData(text: code));
-                          },
-                        ),
-                      ),
+                  try {
+                    final code = await state.api.createInvite(
+                      state.activeCircleIdSafe,
                     );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Invite code: $code'),
+                          action: SnackBarAction(
+                            label: 'Copy',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: code));
+                            },
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('$e')),
+                      );
+                    }
                   }
                 },
               ),
             );
           }
-          final m = members[i - 1];
+          final m = members[isOwner ? i - 1 : i];
           final mine = m.deviceId == state.deviceId;
           return Card(
             child: ListTile(

@@ -14,10 +14,18 @@ class CirclesScreen extends StatelessWidget {
           const _NameDialog(title: 'New circle', hint: 'e.g. The Nelsons'),
     );
     if (!context.mounted || name == null || name.trim().isEmpty) return;
-    final state = context.read<AppState>();
-    await state.createCircle(name.trim(), _randomColor());
-    if (context.mounted) {
-      Navigator.of(context).pushNamed('/map');
+    try {
+      final state = context.read<AppState>();
+      await state.createCircle(name.trim(), _randomColor());
+      if (context.mounted) {
+        Navigator.of(context).pushNamed('/map');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$e')));
+      }
     }
   }
 
