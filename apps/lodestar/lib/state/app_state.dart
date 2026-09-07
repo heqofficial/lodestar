@@ -248,12 +248,17 @@ class AppState extends ChangeNotifier {
 
   /// Registers the iOS APNs device token with the server. Android is a
   /// no-op (push rides the ntfy app there), and a failed sync must never
-  /// break the app — push is a bonus, not a core path.
+  /// break the app — push is a bonus, not a core path. Errors are
+  /// swallowed here because call sites fire-and-forget via unawaited().
   Future<void> _syncPushToken() async {
     if (!registered || _api == null) return;
-    final token = await PushTokenService.apnsToken();
-    if (token.isNotEmpty) {
-      await _api!.setPushToken(token);
+    try {
+      final token = await PushTokenService.apnsToken();
+      if (token.isNotEmpty) {
+        await _api!.setPushToken(token);
+      }
+    } catch (_) {
+      // Retried on the next launch or daily housekeeping tick.
     }
   }
 
@@ -277,9 +282,7 @@ class AppState extends ChangeNotifier {
         try {
           await _db?.prune();
         } catch (_) {}
-        try {
-          await _syncPushToken();
-        } catch (_) {}
+        await _syncPushToken();
       }
       // Retry queued emergencies on a slow cadence (they also flush on
       // every WebSocket reconnect, which is the fast path).
