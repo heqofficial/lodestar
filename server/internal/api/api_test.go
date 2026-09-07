@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -588,14 +589,24 @@ func TestWebSocketConnCap(t *testing.T) {
 }
 
 // recordingSender captures push titles so tests can assert what would have
-// been sent to ntfy/APNs.
+// been sent to ntfy/APNs. Push fires from a server goroutine, so the
+// recording must be synchronized (the race detector will flag it otherwise).
 type recordingSender struct {
+	mu     sync.Mutex
 	titles []string
 }
 
 func (r *recordingSender) Send(_ context.Context, req push.Request) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.titles = append(r.titles, req.Title)
 	return nil
+}
+
+func (r *recordingSender) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.titles...)
 }
 
 func TestCrashPushTitle(t *testing.T) {
@@ -619,16 +630,17 @@ func TestCrashPushTitle(t *testing.T) {
 	// Push fires in a goroutine — poll briefly.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(rec.titles) == 1 {
+		if len(rec.snapshot()) == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(rec.titles) != 1 {
-		t.Fatalf("push not sent (titles=%v)", rec.titles)
+	titles := rec.snapshot()
+	if len(titles) != 1 {
+		t.Fatalf("push not sent (titles=%v)", titles)
 	}
-	if !strings.Contains(rec.titles[0], "Alice") {
-		t.Errorf("crash push title = %q, want it to name the member", rec.titles[0])
+	if !strings.Contains(titles[0], "Alice") {
+		t.Errorf("crash push title = %q, want it to name the member", titles[0])
 	}
 }
 
