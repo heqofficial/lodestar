@@ -10,8 +10,11 @@ import 'models.dart';
 ///
 /// The client never parses envelope contents — those are opaque ciphertext.
 class ApiClient {
-  ApiClient({required this.baseUrl, required this.token, http.Client? httpClient})
-      : _http = httpClient ?? http.Client();
+  ApiClient({
+    required this.baseUrl,
+    required this.token,
+    http.Client? httpClient,
+  }) : _http = httpClient ?? http.Client();
 
   final String baseUrl;
   final String token;
@@ -21,21 +24,30 @@ class ApiClient {
       Uri.parse('$baseUrl$path').replace(queryParameters: query);
 
   Map<String, String> get _headers => {
-        'Authorization': 'Bearer $token',
-        'Content-Type': 'application/json',
-      };
+    'Authorization': 'Bearer $token',
+    'Content-Type': 'application/json',
+  };
 
-  Future<Map<String, dynamic>> _send(String method, String path,
-      {Object? body, Map<String, String>? query}) async {
+  Future<Map<String, dynamic>> _send(
+    String method,
+    String path, {
+    Object? body,
+    Map<String, String>? query,
+  }) async {
     final req = http.Request(method, _u(path, query))..headers.addAll(_headers);
     if (body != null) {
       req.body = jsonEncode(body);
     }
     final streamed = await _http.send(req);
     final resp = await http.Response.fromStream(streamed);
-    final decoded = resp.body.isEmpty ? <String, dynamic>{} : jsonDecode(resp.body) as Map<String, dynamic>;
+    final decoded = resp.body.isEmpty
+        ? <String, dynamic>{}
+        : jsonDecode(resp.body) as Map<String, dynamic>;
     if (resp.statusCode >= 400) {
-      throw ApiException(resp.statusCode, decoded['error'] as String? ?? 'HTTP ${resp.statusCode}');
+      throw ApiException(
+        resp.statusCode,
+        decoded['error'] as String? ?? 'HTTP ${resp.statusCode}',
+      );
     }
     return decoded;
   }
@@ -53,10 +65,17 @@ class ApiClient {
       final resp = await client.post(
         Uri.parse('$baseUrl/api/v1/devices'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'name': name, 'ed25519_pub': ed25519Pub, 'x25519_pub': x25519Pub}),
+        body: jsonEncode({
+          'name': name,
+          'ed25519_pub': ed25519Pub,
+          'x25519_pub': x25519Pub,
+        }),
       );
       if (resp.statusCode != 201) {
-        throw ApiException(resp.statusCode, 'Registration failed (${resp.statusCode})');
+        throw ApiException(
+          resp.statusCode,
+          'Registration failed (${resp.statusCode})',
+        );
       }
       final j = jsonDecode(resp.body) as Map<String, dynamic>;
       return (
@@ -72,11 +91,17 @@ class ApiClient {
 
   Future<List<Circle>> listCircles() async {
     final j = await _send('GET', '/api/v1/circles');
-    return (j['circles'] as List<dynamic>).map((e) => Circle.fromJson(e as Map<String, dynamic>)).toList();
+    return (j['circles'] as List<dynamic>)
+        .map((e) => Circle.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   Future<Circle> createCircle(String name, String color) async {
-    final j = await _send('POST', '/api/v1/circles', body: {'name': name, 'color': color});
+    final j = await _send(
+      'POST',
+      '/api/v1/circles',
+      body: {'name': name, 'color': color},
+    );
     return Circle.fromJson(j);
   }
 
@@ -89,17 +114,31 @@ class ApiClient {
     final j = await _send('GET', '/api/v1/circles/$circleId');
     return (
       Circle.fromJson(j['circle'] as Map<String, dynamic>),
-      (j['members'] as List<dynamic>).map((e) => CircleMember.fromJson(e as Map<String, dynamic>)).toList(),
+      (j['members'] as List<dynamic>)
+          .map((e) => CircleMember.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
   Future<String> createInvite(String circleId, {int ttlHours = 168}) async {
-    final j = await _send('POST', '/api/v1/circles/$circleId/invites', body: {'ttl_hours': ttlHours});
+    final j = await _send(
+      'POST',
+      '/api/v1/circles/$circleId/invites',
+      body: {'ttl_hours': ttlHours},
+    );
     return j['code'] as String;
   }
 
-  Future<void> setSharingFor(String circleId, String deviceId, bool enabled) async {
-    await _send('POST', '/api/v1/circles/$circleId/members/$deviceId/sharing', body: {'enabled': enabled});
+  Future<void> setSharingFor(
+    String circleId,
+    String deviceId,
+    bool enabled,
+  ) async {
+    await _send(
+      'POST',
+      '/api/v1/circles/$circleId/members/$deviceId/sharing',
+      body: {'enabled': enabled},
+    );
   }
 
   Future<void> leaveCircle(String circleId, String deviceId) async {
@@ -115,26 +154,49 @@ class ApiClient {
     required String nonce,
     required String ciphertext,
   }) async {
-    final j = await _send('POST', '/api/v1/circles/$circleId/envelopes',
-        body: {'kind': kind, 'ts': ts, 'nonce': nonce, 'ciphertext': ciphertext});
+    final j = await _send(
+      'POST',
+      '/api/v1/circles/$circleId/envelopes',
+      body: {'kind': kind, 'ts': ts, 'nonce': nonce, 'ciphertext': ciphertext},
+    );
     return Envelope.fromJson(j);
   }
 
-  Future<List<Envelope>> getEnvelopes(String circleId, {int since = 0, String? kind, int limit = 200}) async {
-    final j = await _send('GET', '/api/v1/circles/$circleId/envelopes',
-        query: {'since': '$since', 'kind': ?kind, 'limit': '$limit'});
-    return (j['envelopes'] as List<dynamic>).map((e) => Envelope.fromJson(e as Map<String, dynamic>)).toList();
+  Future<List<Envelope>> getEnvelopes(
+    String circleId, {
+    int since = 0,
+    String? kind,
+    int limit = 200,
+  }) async {
+    final j = await _send(
+      'GET',
+      '/api/v1/circles/$circleId/envelopes',
+      query: {'since': '$since', 'kind': ?kind, 'limit': '$limit'},
+    );
+    return (j['envelopes'] as List<dynamic>)
+        .map((e) => Envelope.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   Future<List<Envelope>> latestEnvelopes(String circleId) async {
     final j = await _send('GET', '/api/v1/circles/$circleId/envelopes/latest');
-    return (j['envelopes'] as List<dynamic>).map((e) => Envelope.fromJson(e as Map<String, dynamic>)).toList();
+    return (j['envelopes'] as List<dynamic>)
+        .map((e) => Envelope.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   // --- circle keys ---------------------------------------------------------
 
-  Future<void> putKeyBlob(String circleId, String forDevice, String ciphertext) async {
-    await _send('POST', '/api/v1/circles/$circleId/keys', body: {'for_device': forDevice, 'ciphertext': ciphertext});
+  Future<void> putKeyBlob(
+    String circleId,
+    String forDevice,
+    String ciphertext,
+  ) async {
+    await _send(
+      'POST',
+      '/api/v1/circles/$circleId/keys',
+      body: {'for_device': forDevice, 'ciphertext': ciphertext},
+    );
   }
 
   Future<String?> getKeyBlob(String circleId) async {

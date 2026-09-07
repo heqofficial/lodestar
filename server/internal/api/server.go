@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type Server struct {
 	hub        *Hub
 	adminToken string
 	limiter    *rateLimiter
+	regLimiter *rateLimiter // per-IP, for the unauthenticated register endpoint
 	startedAt  time.Time
 	pushKinds  map[string]bool
 }
@@ -50,6 +52,7 @@ func New(st *store.Store, sender *push.Multi, adminToken string, pushKinds []str
 		hub:        NewHub(),
 		adminToken: adminToken,
 		limiter:    newRateLimiter(120, 240), // 120 req/min per device, burst 240
+		regLimiter: newRateLimiter(6, 12),    // 6 registrations/min per IP
 		startedAt:  time.Now(),
 		pushKinds:  kinds,
 	}
@@ -114,6 +117,15 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), ctxDeviceKey, dev)))
 	}
+}
+
+// clientIP extracts the peer IP (no proxy headers — self-hosted).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func bearerToken(r *http.Request) string {

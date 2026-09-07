@@ -20,7 +20,8 @@ class SecureKeyStore implements KeyStore {
   Future<String?> read(String key) => _storage.read(key: key);
 
   @override
-  Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+  Future<void> write(String key, String value) =>
+      _storage.write(key: key, value: value);
 }
 
 /// End-to-end encryption for everything a member shares.
@@ -64,15 +65,24 @@ class CryptoService {
     final edPubB64 = await _store.read(_edPub);
     final xPrivB64 = await _store.read(_xPriv);
     final xPubB64 = await _store.read(_xPub);
-    if (edPrivB64 != null && xPrivB64 != null && edPubB64 != null && xPubB64 != null) {
+    if (edPrivB64 != null &&
+        xPrivB64 != null &&
+        edPubB64 != null &&
+        xPubB64 != null) {
       edPair = SimpleKeyPairData(
         base64Decode(edPrivB64),
-        publicKey: SimplePublicKey(base64Decode(edPubB64), type: KeyPairType.ed25519),
+        publicKey: SimplePublicKey(
+          base64Decode(edPubB64),
+          type: KeyPairType.ed25519,
+        ),
         type: KeyPairType.ed25519,
       );
       xPair = SimpleKeyPairData(
         base64Decode(xPrivB64),
-        publicKey: SimplePublicKey(base64Decode(xPubB64), type: KeyPairType.x25519),
+        publicKey: SimplePublicKey(
+          base64Decode(xPubB64),
+          type: KeyPairType.x25519,
+        ),
         type: KeyPairType.x25519,
       );
     } else {
@@ -80,9 +90,15 @@ class CryptoService {
       xPair = await _x25519.newKeyPair();
       final edPub = (await edPair.extractPublicKey()).bytes;
       final xPub = (await xPair.extractPublicKey()).bytes;
-      await _store.write(_edPriv, base64Encode(await edPair.extractPrivateKeyBytes()));
+      await _store.write(
+        _edPriv,
+        base64Encode(await edPair.extractPrivateKeyBytes()),
+      );
       await _store.write(_edPub, base64Encode(edPub));
-      await _store.write(_xPriv, base64Encode(await xPair.extractPrivateKeyBytes()));
+      await _store.write(
+        _xPriv,
+        base64Encode(await xPair.extractPrivateKeyBytes()),
+      );
       await _store.write(_xPub, base64Encode(xPub));
     }
     _edPair = edPair;
@@ -102,7 +118,11 @@ class CryptoService {
     return Uint8List.fromList(sig.bytes);
   }
 
-  Future<bool> verify(Uint8List message, Uint8List signature, Uint8List publicKey) async {
+  Future<bool> verify(
+    Uint8List message,
+    Uint8List signature,
+    Uint8List publicKey,
+  ) async {
     return _ed.verify(
       message,
       signature: Signature(
@@ -133,11 +153,17 @@ class CryptoService {
 
   /// Seals [circleKeyB64] so only the member with [memberX25519PubB64] can
   /// open it. Used by the circle owner when a member joins.
-  Future<String> sealCircleKeyForMember(String circleKeyB64, String memberX25519PubB64) async {
+  Future<String> sealCircleKeyForMember(
+    String circleKeyB64,
+    String memberX25519PubB64,
+  ) async {
     _ensure();
     final shared = await _deriveShared(
       _xPair!,
-      SimplePublicKey(base64Decode(memberX25519PubB64), type: KeyPairType.x25519),
+      SimplePublicKey(
+        base64Decode(memberX25519PubB64),
+        type: KeyPairType.x25519,
+      ),
     );
     final nonce = _randomNonce();
     final box = await _aead.encrypt(
@@ -149,19 +175,31 @@ class CryptoService {
   }
 
   /// Opens a circle-key blob produced by the owner ([ownerX25519PubB64]).
-  Future<String> openCircleKeyForMember(String blobB64, String ownerX25519PubB64) async {
+  Future<String> openCircleKeyForMember(
+    String blobB64,
+    String ownerX25519PubB64,
+  ) async {
     _ensure();
     final shared = await _deriveShared(
       _xPair!,
-      SimplePublicKey(base64Decode(ownerX25519PubB64), type: KeyPairType.x25519),
+      SimplePublicKey(
+        base64Decode(ownerX25519PubB64),
+        type: KeyPairType.x25519,
+      ),
     );
     final box = _boxFromBytesWithNonce(base64Decode(blobB64));
     final clear = await _aead.decrypt(box, secretKey: SecretKey(shared));
     return base64Encode(clear);
   }
 
-  Future<Uint8List> _deriveShared(SimpleKeyPair ourPair, SimplePublicKey theirPub) async {
-    final secret = await _x25519.sharedSecretKey(keyPair: ourPair, remotePublicKey: theirPub);
+  Future<Uint8List> _deriveShared(
+    SimpleKeyPair ourPair,
+    SimplePublicKey theirPub,
+  ) async {
+    final secret = await _x25519.sharedSecretKey(
+      keyPair: ourPair,
+      remotePublicKey: theirPub,
+    );
     final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
     final key = await hkdf.deriveKey(
       secretKey: secret,
@@ -234,7 +272,10 @@ class CryptoService {
       base64Decode(senderPubEd25519B64),
       type: KeyPairType.ed25519,
     );
-    final ok = await _ed.verify(sealed, signature: Signature(sig, publicKey: senderPub));
+    final ok = await _ed.verify(
+      sealed,
+      signature: Signature(sig, publicKey: senderPub),
+    );
     if (!ok) {
       throw const FormatException('bad envelope signature');
     }
@@ -258,7 +299,11 @@ class CryptoService {
 
   /// Key-blob format: [nonce (16)] [ciphertext+mac].
   static Uint8List _boxToBytesWithNonce(SecretBox box) {
-    return Uint8List.fromList([...box.nonce, ...box.cipherText, ...box.mac.bytes]);
+    return Uint8List.fromList([
+      ...box.nonce,
+      ...box.cipherText,
+      ...box.mac.bytes,
+    ]);
   }
 
   static SecretBox _boxFromBytesWithNonce(Uint8List b) {
@@ -279,7 +324,9 @@ class CryptoService {
   }
 
   void _ensure() {
-    if (!_initialized) throw StateError('CryptoService.init() must be called first');
+    if (!_initialized) {
+      throw StateError('CryptoService.init() must be called first');
+    }
   }
 
   static String _requireBytes(Uint8List? b) {

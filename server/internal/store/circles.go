@@ -151,6 +151,21 @@ func (s *Store) IsMember(circleID, deviceID string) (bool, error) {
 	return true, nil
 }
 
+// MemberRole returns the member's role ("owner"/"member") or an error if
+// they are not in the circle. Single-query replacement for IsMember+Members.
+func (s *Store) MemberRole(circleID, deviceID string) (string, error) {
+	var role string
+	err := s.db.QueryRow(`SELECT role FROM circle_members WHERE circle_id = ? AND device_id = ?`,
+		circleID, deviceID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("member role: %w", err)
+	}
+	return role, nil
+}
+
 // Members lists all members of a circle with device public keys.
 func (s *Store) Members(circleID string) ([]Member, error) {
 	rows, err := s.db.Query(`SELECT m.circle_id, m.device_id, m.role, d.name, m.avatar_color,

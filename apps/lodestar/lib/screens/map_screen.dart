@@ -29,7 +29,9 @@ class _MapScreenState extends State<MapScreen> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final circle = state.circles.where((c) => c.id == state.activeCircleId).firstOrNull;
+    final circle = state.circles
+        .where((c) => c.id == state.activeCircleId)
+        .firstOrNull;
 
     // Center on our own latest position if we have one.
     final myPos = state.positionsByDevice[state.deviceId];
@@ -42,6 +44,11 @@ class _MapScreenState extends State<MapScreen> {
         title: Text(circle?.name ?? 'Lodestar'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.task_alt),
+            tooltip: 'Check in',
+            onPressed: () => _checkIn(context),
+          ),
+          IconButton(
             icon: const Icon(Icons.chat_bubble_outline),
             tooltip: 'Circle chat',
             onPressed: () => Navigator.of(context).pushNamed('/chat'),
@@ -50,6 +57,16 @@ class _MapScreenState extends State<MapScreen> {
             icon: const Icon(Icons.history),
             tooltip: 'Location history',
             onPressed: () => Navigator.of(context).pushNamed('/history'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.location_on_outlined),
+            tooltip: 'Places',
+            onPressed: () => Navigator.of(context).pushNamed('/places'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.route_outlined),
+            tooltip: 'Driving trips',
+            onPressed: () => Navigator.of(context).pushNamed('/trips'),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
@@ -65,7 +82,9 @@ class _MapScreenState extends State<MapScreen> {
             options: MapOptions(
               initialCenter: _myLatLng ?? const LatLng(40.0, -3.7),
               initialZoom: 14,
-              interactionOptions: const InteractionOptions(flags: InteractiveFlag.all & ~InteractiveFlag.rotate),
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+              ),
             ),
             children: [
               _osmLayer,
@@ -110,14 +129,23 @@ class _MapScreenState extends State<MapScreen> {
                 ),
             ],
           ),
-          // Status pill.
+          // Status stack: optional waiting-for-key banner + status pill.
           Positioned(
             top: 12,
             left: 12,
-            child: _StatusPill(
-              tracking: state.tracking,
-              sharing: state.sharing,
-              onTap: () => Navigator.of(context).pushNamed('/settings'),
+            right: 12,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!state.hasCircleKey)
+                  _KeyWaitingBanner(onRetry: () => state.retryCircleKey()),
+                if (!state.hasCircleKey) const SizedBox(height: 6),
+                _StatusPill(
+                  tracking: state.tracking,
+                  sharing: state.sharing,
+                  onTap: () => Navigator.of(context).pushNamed('/settings'),
+                ),
+              ],
             ),
           ),
           // Zoom controls.
@@ -128,13 +156,19 @@ class _MapScreenState extends State<MapScreen> {
               children: [
                 FloatingActionButton.small(
                   heroTag: 'z-in',
-                  onPressed: () => _mapController.move(_mapController.camera.center, _mapController.camera.zoom + 1),
+                  onPressed: () => _mapController.move(
+                    _mapController.camera.center,
+                    _mapController.camera.zoom + 1,
+                  ),
                   child: const Icon(Icons.add),
                 ),
                 const SizedBox(height: 8),
                 FloatingActionButton.small(
                   heroTag: 'z-out',
-                  onPressed: () => _mapController.move(_mapController.camera.center, _mapController.camera.zoom - 1),
+                  onPressed: () => _mapController.move(
+                    _mapController.camera.center,
+                    _mapController.camera.zoom - 1,
+                  ),
                   child: const Icon(Icons.remove),
                 ),
                 const SizedBox(height: 8),
@@ -160,7 +194,13 @@ class _MapScreenState extends State<MapScreen> {
       point: pos,
       width: 48,
       height: 48,
-      child: _MemberMarker(avatar: MemberAvatar(name: m.displayName, color: m.avatarColor, size: 44)),
+      child: _MemberMarker(
+        avatar: MemberAvatar(
+          name: m.displayName,
+          color: m.avatarColor,
+          size: 44,
+        ),
+      ),
     );
   }
 
@@ -185,6 +225,10 @@ class _MapScreenState extends State<MapScreen> {
 
   void _showMemberSheet(BuildContext context, AppState state, CircleMember m) {
     final pos = state.positionsByDevice[m.deviceId];
+    final memberEvents = state.events
+        .where((e) => e.deviceId == m.deviceId)
+        .take(3)
+        .toList();
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -196,12 +240,19 @@ class _MapScreenState extends State<MapScreen> {
             children: [
               Row(
                 children: [
-                  MemberAvatar(name: m.displayName, color: m.avatarColor, size: 48),
+                  MemberAvatar(
+                    name: m.displayName,
+                    color: m.avatarColor,
+                    size: 48,
+                  ),
                   const SizedBox(width: 12),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(m.displayName, style: Theme.of(context).textTheme.titleMedium),
+                      Text(
+                        m.displayName,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                       Text(
                         pos == null
                             ? 'No recent position'
@@ -216,22 +267,138 @@ class _MapScreenState extends State<MapScreen> {
                     tooltip: 'History',
                     onPressed: () {
                       Navigator.pop(ctx);
-                      Navigator.of(context).pushNamed('/history', arguments: m.deviceId);
+                      Navigator.of(
+                        context,
+                      ).pushNamed('/history', arguments: m.deviceId);
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.route_outlined),
+                    tooltip: 'Trips',
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.of(
+                        context,
+                      ).pushNamed('/trips', arguments: m.deviceId);
                     },
                   ),
                 ],
               ),
               const SizedBox(height: 12),
               if (!m.sharingEnabled)
-                const Text('🔇 Sharing paused — this member chose privacy right now.')
+                const Text(
+                  '🔇 Sharing paused — this member chose privacy right now.',
+                )
               else if (pos != null)
                 Text(
                   'Accuracy ±${pos.accuracy.round()} m · '
                   '${pos.speed > 1 ? 'moving ${(pos.speed * 3.6).round()} km/h' : 'stationary'}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+              if (memberEvents.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Recent activity',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+                const SizedBox(height: 4),
+                for (final e in memberEvents)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _eventIcon(e.kind),
+                          size: 16,
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            e.text,
+                            style: Theme.of(context).textTheme.bodySmall,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Text(
+                          _timeAgo(e.ts),
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _checkIn(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Check in?'),
+        content: const Text('Let your circle know you\u2019re OK right now.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              context.read<AppState>().checkIn();
+            },
+            child: const Text('I\u2019m OK'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+IconData _eventIcon(String kind) => switch (kind) {
+  'sos' => Icons.emergency,
+  'checkin' => Icons.task_alt,
+  'geofence' => Icons.location_on,
+  'trip' => Icons.route,
+  'crash' => Icons.car_crash,
+  _ => Icons.notifications,
+};
+
+class _KeyWaitingBanner extends StatelessWidget {
+  const _KeyWaitingBanner({required this.onRetry});
+
+  final Future<bool> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: const Color(0xFFFFF3E0),
+      borderRadius: BorderRadius.circular(12),
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.key_off, size: 18, color: Color(0xFFB8551E)),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text(
+                'Waiting for the owner to grant you the circle key…',
+                style: TextStyle(fontSize: 12, color: Color(0xFF7A3B12)),
+              ),
+            ),
+            TextButton(
+              onPressed: () => onRetry(),
+              child: const Text('Retry', style: TextStyle(fontSize: 12)),
+            ),
+          ],
         ),
       ),
     );
@@ -250,7 +417,11 @@ class _MemberMarker extends StatelessWidget {
 }
 
 class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.tracking, required this.sharing, required this.onTap});
+  const _StatusPill({
+    required this.tracking,
+    required this.sharing,
+    required this.onTap,
+  });
 
   final bool tracking;
   final bool sharing;
@@ -261,8 +432,8 @@ class _StatusPill extends StatelessWidget {
     final color = !sharing
         ? Colors.orange
         : tracking
-            ? const Color(0xFF2E9E5B)
-            : Colors.grey;
+        ? const Color(0xFF2E9E5B)
+        : Colors.grey;
     return Material(
       color: Colors.white.withValues(alpha: 0.95),
       borderRadius: BorderRadius.circular(20),
@@ -281,9 +452,12 @@ class _StatusPill extends StatelessWidget {
                 !sharing
                     ? 'Paused'
                     : tracking
-                        ? 'Sharing location'
-                        : 'Not sharing yet',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    ? 'Sharing location'
+                    : 'Not sharing yet',
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),
@@ -346,12 +520,18 @@ class _MemberTile extends StatelessWidget {
       ),
       subtitle: Text(
         pos == null
-            ? (member.sharingEnabled ? 'Waiting for first fix…' : 'Sharing paused')
+            ? (member.sharingEnabled
+                  ? 'Waiting for first fix…'
+                  : 'Sharing paused')
             : _timeAgo(pos.ts),
         style: const TextStyle(fontSize: 12),
       ),
-      trailing: member.role == 'owner' ? const Icon(Icons.star, size: 16, color: Color(0xFFF2A03D)) : null,
-      onTap: () => Navigator.of(context).pushNamed('/history', arguments: member.deviceId),
+      trailing: member.role == 'owner'
+          ? const Icon(Icons.star, size: 16, color: Color(0xFFF2A03D))
+          : null,
+      onTap: () => Navigator.of(
+        context,
+      ).pushNamed('/history', arguments: member.deviceId),
     );
   }
 }

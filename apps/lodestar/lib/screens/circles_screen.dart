@@ -10,7 +10,8 @@ class CirclesScreen extends StatelessWidget {
   Future<void> _createCircle(BuildContext context) async {
     final name = await showDialog<String>(
       context: context,
-      builder: (ctx) => const _NameDialog(title: 'New circle', hint: 'e.g. The Nelsons'),
+      builder: (ctx) =>
+          const _NameDialog(title: 'New circle', hint: 'e.g. The Nelsons'),
     );
     if (!context.mounted || name == null || name.trim().isEmpty) return;
     final state = context.read<AppState>();
@@ -23,7 +24,11 @@ class CirclesScreen extends StatelessWidget {
   Future<void> _joinCircle(BuildContext context) async {
     final code = await showDialog<String>(
       context: context,
-      builder: (ctx) => const _NameDialog(title: 'Join a circle', hint: 'Enter the invite code', uppercase: true),
+      builder: (ctx) => const _NameDialog(
+        title: 'Join a circle',
+        hint: 'Enter the invite code',
+        uppercase: true,
+      ),
     );
     if (!context.mounted || code == null || code.trim().isEmpty) return;
     try {
@@ -34,7 +39,9 @@ class CirclesScreen extends StatelessWidget {
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -58,11 +65,16 @@ class CirclesScreen extends StatelessWidget {
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: _hex(circle.color),
-                      child: const Icon(Icons.family_restroom, color: Colors.white),
+                      child: const Icon(
+                        Icons.family_restroom,
+                        color: Colors.white,
+                      ),
                     ),
                     title: Text(circle.name),
                     subtitle: Text(
-                      members.isEmpty ? 'Tap to open' : '${members.length} member${members.length == 1 ? '' : 's'}',
+                      members.isEmpty
+                          ? 'Tap to open'
+                          : '${members.length} member${members.length == 1 ? '' : 's'}',
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
@@ -115,13 +127,25 @@ class CirclesScreen extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.share),
               title: const Text('Copy invite code'),
-              subtitle: Text(state.circles.where((c) => c.id == circleId).firstOrNull?.inviteCode ?? ''),
+              subtitle: Text(
+                state.circles
+                        .where((c) => c.id == circleId)
+                        .firstOrNull
+                        ?.inviteCode ??
+                    '',
+              ),
               onTap: () {
                 Navigator.pop(ctx);
-                final code = state.circles.where((c) => c.id == circleId).firstOrNull?.inviteCode ?? '';
+                final code =
+                    state.circles
+                        .where((c) => c.id == circleId)
+                        .firstOrNull
+                        ?.inviteCode ??
+                    '';
                 if (code.isNotEmpty) {
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text('Invite code: $code')));
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('Invite code: $code')));
                 }
               },
             ),
@@ -146,7 +170,10 @@ class _EmptyState extends StatelessWidget {
           children: [
             const Icon(Icons.family_restroom, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
-            Text('No circles yet', style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'No circles yet',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 8),
             Text(
               'Create a circle for your family, then share the invite code.\nEveryone gets their own encrypted key on their own phone.',
@@ -161,7 +188,11 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _NameDialog extends StatelessWidget {
-  const _NameDialog({required this.title, required this.hint, this.uppercase = false});
+  const _NameDialog({
+    required this.title,
+    required this.hint,
+    this.uppercase = false,
+  });
 
   final String title;
   final String hint;
@@ -175,12 +206,17 @@ class _NameDialog extends StatelessWidget {
       content: TextField(
         controller: ctrl,
         autofocus: true,
-        textCapitalization: uppercase ? TextCapitalization.characters : TextCapitalization.words,
+        textCapitalization: uppercase
+            ? TextCapitalization.characters
+            : TextCapitalization.words,
         decoration: InputDecoration(hintText: hint),
         onSubmitted: (_) => Navigator.pop(context, ctrl.text),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
         FilledButton(
           onPressed: () => Navigator.pop(context, ctrl.text),
           child: const Text('OK'),
@@ -191,11 +227,18 @@ class _NameDialog extends StatelessWidget {
 }
 
 const _palette = [
-  '#4f7cff', '#e05d5d', '#2e9e5b', '#f2a03d',
-  '#9b59b6', '#1abc9c', '#e67e22', '#3498db',
+  '#4f7cff',
+  '#e05d5d',
+  '#2e9e5b',
+  '#f2a03d',
+  '#9b59b6',
+  '#1abc9c',
+  '#e67e22',
+  '#3498db',
 ];
 
-String _randomColor() => _palette[DateTime.now().millisecondsSinceEpoch % _palette.length];
+String _randomColor() =>
+    _palette[DateTime.now().millisecondsSinceEpoch % _palette.length];
 
 Color _hex(String hex) {
   var h = hex.replaceAll('#', '');

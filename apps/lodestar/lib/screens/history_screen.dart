@@ -40,22 +40,49 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _error = null;
     });
     try {
-      final dayStart = DateTime(_day.year, _day.month, _day.day).millisecondsSinceEpoch;
+      final dayStart = DateTime(
+        _day.year,
+        _day.month,
+        _day.day,
+      ).millisecondsSinceEpoch;
       final dayEnd = dayStart + 24 * 3600 * 1000;
-      final envs = await state.api.getEnvelopes(circleId, since: 0, kind: 'location', limit: 2000);
-      final sender = state.membersByCircle[circleId]?.where((m) => m.deviceId == member).firstOrNull;
+      final sender = state.membersByCircle[circleId]
+          ?.where((m) => m.deviceId == member)
+          .firstOrNull;
       final track = <LatLng>[];
       if (sender != null) {
-        for (final e in envs) {
-          if (e.deviceId != member || e.ts < dayStart || e.ts >= dayEnd) continue;
-          final open = await state.crypto.openEnvelope(
-            circleId: circleId,
-            nonceB64: e.nonce,
-            ciphertextB64: e.ciphertext,
-            senderPubEd25519B64: sender.ed25519Pub,
+        // The server caps pages at 1000 envelopes; page backwards in time
+        // (oldest page first) until we reach the start of the day.
+        var since = 0;
+        while (true) {
+          final envs = await state.api.getEnvelopes(
+            circleId,
+            since: since,
+            kind: 'location',
+            limit: 1000,
           );
-          final d = open['data'] as Map<String, dynamic>;
-          track.add(LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble()));
+          if (envs.isEmpty) break;
+          for (final e in envs) {
+            if (e.deviceId != member || e.ts < dayStart || e.ts >= dayEnd) {
+              continue;
+            }
+            final open = await state.crypto.openEnvelope(
+              circleId: circleId,
+              nonceB64: e.nonce,
+              ciphertextB64: e.ciphertext,
+              senderPubEd25519B64: sender.ed25519Pub,
+            );
+            final d = open['data'] as Map<String, dynamic>;
+            track.add(
+              LatLng(
+                (d['lat'] as num).toDouble(),
+                (d['lng'] as num).toDouble(),
+              ),
+            );
+          }
+          final oldest = envs.map((e) => e.ts).reduce((a, b) => a < b ? a : b);
+          if (envs.length < 1000 || oldest <= dayStart) break;
+          since = oldest;
         }
       }
       setState(() {
@@ -99,7 +126,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     hint: const Text('Choose a member'),
                     items: [
                       for (final m in members)
-                        DropdownMenuItem(value: m.deviceId, child: Text(m.displayName)),
+                        DropdownMenuItem(
+                          value: m.deviceId,
+                          child: Text(m.displayName),
+                        ),
                     ],
                     onChanged: (v) => setState(() => _memberId = v),
                   ),
@@ -112,7 +142,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     final picked = await showDatePicker(
                       context: context,
                       initialDate: _day,
-                      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                      firstDate: DateTime.now().subtract(
+                        const Duration(days: 365),
+                      ),
                       lastDate: DateTime.now(),
                     );
                     if (picked != null) setState(() => _day = picked);
@@ -125,29 +157,38 @@ class _HistoryScreenState extends State<HistoryScreen> {
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
-                    ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
-                    : _track.isEmpty
-                        ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(Icons.route_outlined, size: 56, color: Colors.grey),
-                                const SizedBox(height: 8),
-                                Text(
-                                  member == null
-                                      ? 'Pick a member above'
-                                      : 'No locations on ${DateFormat('MMM d').format(_day)}',
-                                  style: Theme.of(context).textTheme.titleMedium,
-                                ),
-                                const SizedBox(height: 4),
-                                const Text(
-                                  'History is encrypted — the server never sees these routes.',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                                ),
-                              ],
-                            ),
-                          )
-                        : _TrackMap(track: _track, member: member),
+                ? Center(
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  )
+                : _track.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.route_outlined,
+                          size: 56,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          member == null
+                              ? 'Pick a member above'
+                              : 'No locations on ${DateFormat('MMM d').format(_day)}',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'History is encrypted — the server never sees these routes.',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  )
+                : _TrackMap(track: _track, member: member),
           ),
         ],
       ),
@@ -169,7 +210,9 @@ class _TrackMap extends StatelessWidget {
       options: MapOptions(
         initialCenter: start,
         initialZoom: 14,
-        interactionOptions: const InteractionOptions(flags: InteractiveFlag.all & ~InteractiveFlag.rotate),
+        interactionOptions: const InteractionOptions(
+          flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+        ),
       ),
       children: [
         TileLayer(
@@ -183,14 +226,38 @@ class _TrackMap extends StatelessWidget {
               Polyline(
                 points: track,
                 strokeWidth: 4,
-                color: Color(int.tryParse(member?.avatarColor.replaceAll('#', 'FF') ?? '', radix: 16) ?? 0xFF4F7CFF),
+                color: Color(
+                  int.tryParse(
+                        member?.avatarColor.replaceAll('#', 'FF') ?? '',
+                        radix: 16,
+                      ) ??
+                      0xFF4F7CFF,
+                ),
               ),
             ],
           ),
         MarkerLayer(
           markers: [
-            Marker(point: start, width: 36, height: 36, child: const Icon(Icons.trip_origin, color: Color(0xFF2E9E5B), size: 24)),
-            Marker(point: end, width: 36, height: 36, child: const Icon(Icons.place, color: Color(0xFFE05D5D), size: 32)),
+            Marker(
+              point: start,
+              width: 36,
+              height: 36,
+              child: const Icon(
+                Icons.trip_origin,
+                color: Color(0xFF2E9E5B),
+                size: 24,
+              ),
+            ),
+            Marker(
+              point: end,
+              width: 36,
+              height: 36,
+              child: const Icon(
+                Icons.place,
+                color: Color(0xFFE05D5D),
+                size: 32,
+              ),
+            ),
           ],
         ),
       ],

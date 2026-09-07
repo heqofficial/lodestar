@@ -70,17 +70,24 @@ class _ChatScreenState extends State<ChatScreen> {
                       final mine = msg.deviceId == state.deviceId;
                       final member = memberById[msg.deviceId];
                       return Align(
-                        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+                        alignment: mine
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
                         child: Container(
                           margin: const EdgeInsets.symmetric(vertical: 4),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
                           constraints: BoxConstraints(
                             maxWidth: MediaQuery.of(context).size.width * 0.75,
                           ),
                           decoration: BoxDecoration(
                             color: mine
                                 ? const Color(0xFF4F7CFF)
-                                : Theme.of(context).colorScheme.surfaceContainerHighest,
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
                             borderRadius: BorderRadius.only(
                               topLeft: const Radius.circular(14),
                               topRight: const Radius.circular(14),
@@ -89,19 +96,27 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ),
                           child: Column(
-                            crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                            crossAxisAlignment: mine
+                                ? CrossAxisAlignment.end
+                                : CrossAxisAlignment.start,
                             children: [
                               if (!mine && member != null)
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    MemberAvatar(name: member.displayName, color: member.avatarColor, size: 14),
+                                    MemberAvatar(
+                                      name: member.displayName,
+                                      color: member.avatarColor,
+                                      size: 14,
+                                    ),
                                     const SizedBox(width: 4),
                                     Text(
                                       member.displayName,
                                       style: TextStyle(
                                         fontSize: 10,
-                                        color: Theme.of(context).colorScheme.outline,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.outline,
                                       ),
                                     ),
                                   ],
@@ -109,13 +124,19 @@ class _ChatScreenState extends State<ChatScreen> {
                               const SizedBox(height: 2),
                               Text(
                                 msg.text,
-                                style: TextStyle(color: mine ? Colors.white : null),
+                                style: TextStyle(
+                                  color: mine ? Colors.white : null,
+                                ),
                               ),
                               Text(
-                                DateFormat('HH:mm').format(DateTime.fromMillisecondsSinceEpoch(msg.ts)),
+                                DateFormat('HH:mm').format(
+                                  DateTime.fromMillisecondsSinceEpoch(msg.ts),
+                                ),
                                 style: TextStyle(
                                   fontSize: 10,
-                                  color: mine ? Colors.white70 : Theme.of(context).colorScheme.outline,
+                                  color: mine
+                                      ? Colors.white70
+                                      : Theme.of(context).colorScheme.outline,
                                 ),
                               ),
                             ],
@@ -137,8 +158,13 @@ class _ChatScreenState extends State<ChatScreen> {
                       textCapitalization: TextCapitalization.sentences,
                       decoration: const InputDecoration(
                         hintText: 'Message your circle…',
-                        border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(24))),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.all(Radius.circular(24)),
+                        ),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
                         isDense: true,
                       ),
                       onSubmitted: (_) => _send(),

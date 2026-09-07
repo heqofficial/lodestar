@@ -29,7 +29,9 @@ class LocalDb {
             ciphertext TEXT NOT NULL,
             created_at INTEGER NOT NULL
           )''');
-        await db.execute('CREATE INDEX idx_env_circle_ts ON envelopes(circle_id, ts)');
+        await db.execute(
+          'CREATE INDEX idx_env_circle_ts ON envelopes(circle_id, ts)',
+        );
         await db.execute('''
           CREATE TABLE circles (
             id TEXT PRIMARY KEY,
@@ -69,21 +71,31 @@ class LocalDb {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<List<Envelope>> cachedEnvelopes(String circleId, {String? kind, int limit = 500}) async {
-    final rows = await _db.query('envelopes',
-        where: kind == null ? 'circle_id = ?' : 'circle_id = ? AND kind = ?',
-        whereArgs: kind == null ? [circleId] : [circleId, kind],
-        orderBy: 'ts DESC',
-        limit: limit);
-    return rows.map((r) => Envelope(
-          id: r['id'] as String,
-          circleId: r['circle_id'] as String,
-          deviceId: r['device_id'] as String,
-          kind: r['kind'] as String,
-          ts: r['ts'] as int,
-          nonce: r['nonce'] as String,
-          ciphertext: r['ciphertext'] as String,
-        )).toList();
+  Future<List<Envelope>> cachedEnvelopes(
+    String circleId, {
+    String? kind,
+    int limit = 500,
+  }) async {
+    final rows = await _db.query(
+      'envelopes',
+      where: kind == null ? 'circle_id = ?' : 'circle_id = ? AND kind = ?',
+      whereArgs: kind == null ? [circleId] : [circleId, kind],
+      orderBy: 'ts DESC',
+      limit: limit,
+    );
+    return rows
+        .map(
+          (r) => Envelope(
+            id: r['id'] as String,
+            circleId: r['circle_id'] as String,
+            deviceId: r['device_id'] as String,
+            kind: r['kind'] as String,
+            ts: r['ts'] as int,
+            nonce: r['nonce'] as String,
+            ciphertext: r['ciphertext'] as String,
+          ),
+        )
+        .toList();
   }
 
   Future<void> upsertCircle(Circle c) async {
@@ -96,7 +108,10 @@ class LocalDb {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<void> upsertMembers(String circleId, List<CircleMember> members) async {
+  Future<void> upsertMembers(
+    String circleId,
+    List<CircleMember> members,
+  ) async {
     await _db.delete('members', where: 'circle_id = ?', whereArgs: [circleId]);
     final batch = _db.batch();
     for (final m in members) {
@@ -115,17 +130,25 @@ class LocalDb {
   }
 
   Future<List<CircleMember>> cachedMembers(String circleId) async {
-    final rows = await _db.query('members', where: 'circle_id = ?', whereArgs: [circleId]);
-    return rows.map((r) => CircleMember(
-          circleId: circleId,
-          deviceId: r['device_id'] as String,
-          role: r['role'] as String,
-          displayName: r['display_name'] as String,
-          avatarColor: r['avatar_color'] as String,
-          ed25519Pub: r['ed25519_pub'] as String,
-          x25519Pub: r['x25519_pub'] as String,
-          sharingEnabled: (r['sharing_enabled'] as int) == 1,
-          joinedAt: 0,
-        )).toList();
+    final rows = await _db.query(
+      'members',
+      where: 'circle_id = ?',
+      whereArgs: [circleId],
+    );
+    return rows
+        .map(
+          (r) => CircleMember(
+            circleId: circleId,
+            deviceId: r['device_id'] as String,
+            role: r['role'] as String,
+            displayName: r['display_name'] as String,
+            avatarColor: r['avatar_color'] as String,
+            ed25519Pub: r['ed25519_pub'] as String,
+            x25519Pub: r['x25519_pub'] as String,
+            sharingEnabled: (r['sharing_enabled'] as int) == 1,
+            joinedAt: 0,
+          ),
+        )
+        .toList();
   }
 }

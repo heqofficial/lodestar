@@ -42,7 +42,8 @@ class AdaptiveTracker {
     if (perm == PermissionStatus.denied) {
       perm = await _location.requestPermission();
     }
-    if (perm != PermissionStatus.granted && perm != PermissionStatus.grantedLimited) {
+    if (perm != PermissionStatus.granted &&
+        perm != PermissionStatus.grantedLimited) {
       throw StateError('Location permission required');
     }
 
@@ -57,7 +58,8 @@ class AdaptiveTracker {
       title: 'Lodestar',
       subtitle: 'Sharing your location with your circle',
       iconName: '@mipmap/ic_launcher',
-      description: 'Keeps your family informed while Lodestar runs in the background',
+      description:
+          'Keeps your family informed while Lodestar runs in the background',
     );
 
     await _applyMode(_mode);
@@ -89,8 +91,8 @@ class AdaptiveTracker {
     final next = speed > 5.0
         ? Mode.drive
         : speed > 0.7
-            ? Mode.walk
-            : Mode.stationary;
+        ? Mode.walk
+        : Mode.stationary;
     if (next != _mode) {
       _mode = next;
       unawaited(_applyMode(_mode));
@@ -132,20 +134,20 @@ enum Mode {
   stationary;
 
   LocationAccuracy get accuracy => switch (this) {
-        Mode.drive => LocationAccuracy.high,
-        Mode.walk => LocationAccuracy.high,
-        Mode.stationary => LocationAccuracy.balanced,
-      };
+    Mode.drive => LocationAccuracy.high,
+    Mode.walk => LocationAccuracy.high,
+    Mode.stationary => LocationAccuracy.balanced,
+  };
 
   double get distanceFilter => switch (this) {
-        Mode.drive => 25,
-        Mode.walk => 10,
-        Mode.stationary => 250,
-      };
+    Mode.drive => 25,
+    Mode.walk => 10,
+    Mode.stationary => 250,
+  };
 
   int get intervalMs => switch (this) {
-        Mode.drive => 15000,
-        Mode.walk => 30000,
-        Mode.stationary => 300000,
-      };
+    Mode.drive => 15000,
+    Mode.walk => 30000,
+    Mode.stationary => 300000,
+  };
 }

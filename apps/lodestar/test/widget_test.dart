@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lodestar/core/api/models.dart';
 import 'package:lodestar/core/crypto/crypto_service.dart';
+import 'package:lodestar/core/geo.dart';
 import 'package:lodestar/core/tracking/geofence_engine.dart';
 
 /// In-memory key store so tests never touch the OS keystore.
@@ -80,8 +81,7 @@ void main() {
       );
       // Flip a bit in the ciphertext.
       final raw = base64Decode(sealed.ciphertext);
-      final tampered = Uint8List.fromList(raw)
-        ..[raw.length - 1] ^= 0x01;
+      final tampered = Uint8List.fromList(raw)..[raw.length - 1] ^= 0x01;
       await expectLater(
         bob.openEnvelope(
           circleId: 'c1',
@@ -104,7 +104,10 @@ void main() {
         base64Encode(circleKey),
         member.x25519PubB64,
       );
-      final opened = await member.openCircleKeyForMember(blob, owner.x25519PubB64);
+      final opened = await member.openCircleKeyForMember(
+        blob,
+        owner.x25519PubB64,
+      );
       expect(base64Decode(opened), circleKey);
     });
   });
@@ -120,36 +123,75 @@ void main() {
         ts: 0,
       );
       final events = <String>[];
-      final engine = GeofenceEngine(places: [place], onEvent: (p, e) => events.add(e));
+      final engine = GeofenceEngine(
+        places: [place],
+        onEvent: (p, e) => events.add(e),
+      );
 
-      engine.onPosition(Position(lat: 40.0, lng: -3.70001, accuracy: 10, speed: 0, ts: 1));
+      engine.onPosition(
+        Position(lat: 40.0, lng: -3.70001, accuracy: 10, speed: 0, ts: 1),
+      );
       expect(events, isEmpty); // initial state seeds, no event yet
 
       // Cross the boundary (outside).
-      engine.onPosition(Position(lat: 40.1, lng: -3.8, accuracy: 10, speed: 0, ts: 2));
+      engine.onPosition(
+        Position(lat: 40.1, lng: -3.8, accuracy: 10, speed: 0, ts: 2),
+      );
       expect(events, ['leave']);
 
       // Back inside.
-      engine.onPosition(Position(lat: 40.0, lng: -3.70001, accuracy: 10, speed: 0, ts: 70000));
+      engine.onPosition(
+        Position(lat: 40.0, lng: -3.70001, accuracy: 10, speed: 0, ts: 70000),
+      );
       expect(events, ['leave', 'enter']);
     });
 
     test('ignores inaccurate fixes', () {
-      final place = Place(id: 'p', name: 'P', lat: 40.0, lng: -3.7, radiusM: 100, ts: 0);
+      final place = Place(
+        id: 'p',
+        name: 'P',
+        lat: 40.0,
+        lng: -3.7,
+        radiusM: 100,
+        ts: 0,
+      );
       final events = <String>[];
-      final engine = GeofenceEngine(places: [place], onEvent: (_, e) => events.add(e));
-      engine.onPosition(Position(lat: 40.0, lng: -3.7, accuracy: 500, speed: 0, ts: 1));
-      engine.onPosition(Position(lat: 40.1, lng: -3.8, accuracy: 500, speed: 0, ts: 2));
+      final engine = GeofenceEngine(
+        places: [place],
+        onEvent: (_, e) => events.add(e),
+      );
+      engine.onPosition(
+        Position(lat: 40.0, lng: -3.7, accuracy: 500, speed: 0, ts: 1),
+      );
+      engine.onPosition(
+        Position(lat: 40.1, lng: -3.8, accuracy: 500, speed: 0, ts: 2),
+      );
       expect(events, isEmpty);
     });
 
     test('debounces rapid transitions', () {
-      final place = Place(id: 'p', name: 'P', lat: 40.0, lng: -3.7, radiusM: 100, ts: 0);
+      final place = Place(
+        id: 'p',
+        name: 'P',
+        lat: 40.0,
+        lng: -3.7,
+        radiusM: 100,
+        ts: 0,
+      );
       final events = <String>[];
-      final engine = GeofenceEngine(places: [place], onEvent: (_, e) => events.add(e));
-      engine.onPosition(Position(lat: 40.0, lng: -3.7001, accuracy: 10, speed: 0, ts: 1));
-      engine.onPosition(Position(lat: 40.1, lng: -3.8, accuracy: 10, speed: 0, ts: 2000));
-      engine.onPosition(Position(lat: 40.0, lng: -3.7001, accuracy: 10, speed: 0, ts: 3000));
+      final engine = GeofenceEngine(
+        places: [place],
+        onEvent: (_, e) => events.add(e),
+      );
+      engine.onPosition(
+        Position(lat: 40.0, lng: -3.7001, accuracy: 10, speed: 0, ts: 1),
+      );
+      engine.onPosition(
+        Position(lat: 40.1, lng: -3.8, accuracy: 10, speed: 0, ts: 2000),
+      );
+      engine.onPosition(
+        Position(lat: 40.0, lng: -3.7001, accuracy: 10, speed: 0, ts: 3000),
+      );
       // Leave fires, but the quick re-enter is debounced (within 60 s).
       expect(events, ['leave']);
     });
@@ -162,4 +204,4 @@ void main() {
       expect(d, closeTo(343000, 20000));
     });
   });
-}
+}

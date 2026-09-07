@@ -330,6 +330,42 @@ func TestAdminPageAndHealthz(t *testing.T) {
 	}
 }
 
+func TestTripAndCrashKindsAccepted(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "C")
+
+	resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+		"kind": "trip", "ts": time.Now().UnixMilli(), "nonce": "n", "ciphertext": "c2ln",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("trip kind: got %d, want 201", resp.StatusCode)
+	}
+	resp, _ = doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+		"kind": "crash", "ts": time.Now().UnixMilli(), "nonce": "n", "ciphertext": "c2ln",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("crash kind: got %d, want 201", resp.StatusCode)
+	}
+}
+
+func TestRegisterRateLimit(t *testing.T) {
+	s, _ := newTestServer(t)
+	limited := false
+	for i := 0; i < 20; i++ {
+		resp, _ := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
+			"name": "Spam", "ed25519_pub": "e", "x25519_pub": "x",
+		})
+		if resp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Error("expected register endpoint to rate limit")
+	}
+}
+
 func TestRateLimiting(t *testing.T) {
 	s, _ := newTestServer(t)
 	_, tok := register(t, s, "Spammer")

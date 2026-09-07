@@ -60,10 +60,16 @@ class _SosScreenState extends State<SosScreen> {
                     height: _sent ? 180 : 200,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: _sent ? const Color(0xFF2E9E5B) : const Color(0xFFE05D5D),
+                      color: _sent
+                          ? const Color(0xFF2E9E5B)
+                          : const Color(0xFFE05D5D),
                       boxShadow: [
                         BoxShadow(
-                          color: (_sent ? const Color(0xFF2E9E5B) : const Color(0xFFE05D5D)).withValues(alpha: 0.4),
+                          color:
+                              (_sent
+                                      ? const Color(0xFF2E9E5B)
+                                      : const Color(0xFFE05D5D))
+                                  .withValues(alpha: 0.4),
                           blurRadius: 32,
                           spreadRadius: 4,
                         ),
@@ -92,7 +98,10 @@ class _SosScreenState extends State<SosScreen> {
                           const SizedBox(
                             width: 20,
                             height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
                           ),
                         ],
                       ],

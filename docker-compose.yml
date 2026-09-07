@@ -12,7 +12,7 @@ services:
       # LODESTAR_NTFY_URL: "http://ntfy:80"   # uncomment to enable push relay
       # LODESTAR_NTFY_TOKEN: ""               # ntfy access token, if required
       # LODESTAR_ADMIN_TOKEN: ""              # protects /admin
-      # LODESTAR_PUSH_KINDS: "sos,geofence"
+      # LODESTAR_PUSH_KINDS: "sos,geofence,crash"
     volumes:
       - ./data:/data
 

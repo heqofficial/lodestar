@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/api/api_client.dart';
@@ -10,13 +11,15 @@ import '../core/api/models.dart';
 import '../core/crypto/crypto_service.dart';
 import '../core/store/local_db.dart';
 import '../core/tracking/adaptive_tracker.dart';
+import '../core/tracking/crash_detector.dart';
 import '../core/tracking/geofence_engine.dart';
+import '../core/tracking/trip_detector.dart';
 
 /// Single source of truth for the UI: identity, circles, live positions,
 /// chat, places, SOS/check-in state, and the tracking loop.
 class AppState extends ChangeNotifier {
   AppState({CryptoService? crypto, LocalDb? db})
-      : crypto = crypto ?? CryptoService(SecureKeyStore()) {
+    : crypto = crypto ?? CryptoService(SecureKeyStore()) {
     _dbFuture = db != null ? Future.value(db) : LocalDb.open();
   }
 
@@ -39,20 +42,38 @@ class AppState extends ChangeNotifier {
   final Map<String, Position> positionsByDevice = {};
   final Map<String, Place> places = {};
   final List<({String deviceId, String kind, String text, int ts})> events = [];
-  final Map<String, List<({String deviceId, String text, int ts})>> chatByCircle = {};
+  final Map<String, List<({String deviceId, String text, int ts})>>
+  chatByCircle = {};
 
   // --- status ---
   bool tracking = false;
   bool sharing = true;
   String? lastError;
 
+  /// True once this device holds the active circle's key (sync mirror of the
+  /// keystore, kept current by the key-management paths).
+  bool hasCircleKey = false;
+
+  /// Speeding alert threshold for driving reports (km/h).
+  double speedingLimitKmh = 90;
+
   ApiClient? _api;
   LocalDb? _db;
   AdaptiveTracker? _tracker;
   GeofenceEngine? _geofence;
+  TripDetector? _trips;
+  CrashDetector? _crash;
   StreamSubscription<Envelope>? _wsSub;
+  StreamSubscription<dynamic>? _accelSub;
+  Timer? _housekeepingTimer;
   bool _disposed = false;
+
+  /// Envelopes received while we had no circle key yet; flushed after grant.
   final List<Envelope> _pending = [];
+
+  /// Envelope ids already processed (replay protection).
+  final Set<String> _seenIds = {};
+  int _memberCount = 0; // last known member count of the active circle
 
   ApiClient get api {
     final a = _api;
@@ -70,9 +91,12 @@ class AppState extends ChangeNotifier {
     return m;
   }
 
-  String? get ownerId => activeCircleId == null ? null : _ownerId(activeCircleId!);
+  String? get ownerId =>
+      activeCircleId == null ? null : _ownerId(activeCircleId!);
   String? _ownerId(String circleId) {
-    final m = membersByCircle[circleId]?.where((m) => m.role == 'owner').firstOrNull;
+    final m = membersByCircle[circleId]
+        ?.where((m) => m.role == 'owner')
+        .firstOrNull;
     return m?.deviceId;
   }
 
@@ -86,6 +110,7 @@ class AppState extends ChangeNotifier {
     deviceId = prefs.getString('device_id') ?? '';
     deviceName = prefs.getString('device_name') ?? '';
     token = prefs.getString('token') ?? '';
+    speedingLimitKmh = prefs.getDouble('speeding_limit_kmh') ?? 90;
     registered = deviceId.isNotEmpty && token.isNotEmpty;
     await crypto.init();
     notifyListeners();
@@ -138,6 +163,7 @@ class AppState extends ChangeNotifier {
       if (hasActiveCircle) {
         await _loadCircleState(activeCircleId!);
       }
+      _startHousekeeping();
       notifyListeners();
     } catch (e) {
       lastError = '$e';
@@ -145,11 +171,75 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Periodic background jobs while the app lives:
+  ///  * joiner without a key: keep asking the server until the owner grants one
+  ///  * owner: notice new members and remind to grant keys
+  void _startHousekeeping() {
+    _housekeepingTimer ??= Timer.periodic(const Duration(seconds: 20), (
+      _,
+    ) async {
+      final circleId = activeCircleId;
+      if (circleId == null) return;
+      final key = await crypto.circleKey(circleId);
+      final owner = _ownerId(circleId);
+      try {
+        if (owner != deviceId && key == null) {
+          await _tryFetchCircleKey(circleId);
+          if (await crypto.circleKey(circleId) != null) {
+            _flushPending();
+            notifyListeners();
+          }
+        } else if (owner == deviceId) {
+          final members = await api.circleDetail(circleId);
+          final count = members.$2.length;
+          if (_memberCount != 0 && count > _memberCount) {
+            final newcomers = members.$2
+                .where((m) => m.deviceId != deviceId)
+                .where(
+                  (m) => !(membersByCircle[circleId] ?? const []).any(
+                    (old) => old.deviceId == m.deviceId,
+                  ),
+                )
+                .toList();
+            for (final m in newcomers) {
+              events.insert(0, (
+                deviceId: m.deviceId,
+                kind: 'member_join',
+                text:
+                    '${m.displayName} joined — grant the circle key in Members',
+                ts: DateTime.now().millisecondsSinceEpoch,
+              ));
+            }
+          }
+          _memberCount = count;
+          membersByCircle[circleId] = members.$2;
+          await _db?.upsertMembers(circleId, members.$2);
+          notifyListeners();
+        }
+      } catch (_) {
+        // transient network error — retry next tick
+      }
+    });
+  }
+
   Future<void> _ensureOwnedCircleKey(String circleId, Circle circle) async {
-    if (await crypto.circleKey(circleId) != null) return;
+    if (await crypto.circleKey(circleId) != null) {
+      _syncKeyFlag(circleId);
+      return;
+    }
     // We created (or own) this circle but have no key — create and hold it.
     final key = await crypto.newCircleKey();
     await crypto.saveCircleKey(circleId, key);
+    _syncKeyFlag(circleId);
+  }
+
+  void _syncKeyFlag(String? circleId) {
+    // Async read; flag flips when the read completes.
+    unawaited(() async {
+      hasCircleKey =
+          circleId != null && await crypto.circleKey(circleId) != null;
+      notifyListeners();
+    }());
   }
 
   Future<void> _tryFetchCircleKey(String circleId) async {
@@ -164,8 +254,15 @@ class AppState extends ChangeNotifier {
     if (ownerXPub == null || ownerXPub.isEmpty) return;
     try {
       final keyB64 = await crypto.openCircleKeyForMember(blob, ownerXPub);
-      await crypto.saveCircleKey(circleId, Uint8List.fromList(base64Decode(keyB64)));
-    } catch (_) {/* wrong key or tampered — owner will re-grant */}
+      await crypto.saveCircleKey(
+        circleId,
+        Uint8List.fromList(base64Decode(keyB64)),
+      );
+      _syncKeyFlag(circleId);
+      _flushPending();
+    } catch (_) {
+      /* wrong key or tampered — owner will re-grant */
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -176,18 +273,21 @@ class AppState extends ChangeNotifier {
     final c = await api.createCircle(name, color);
     final key = await crypto.newCircleKey();
     await crypto.saveCircleKey(c.id, key);
+    hasCircleKey = true;
     circles.add(c);
-    membersByCircle[c.id] = [CircleMember(
-          circleId: c.id,
-          deviceId: deviceId,
-          role: 'owner',
-          displayName: deviceName,
-          avatarColor: color,
-          ed25519Pub: crypto.ed25519PubB64,
-          x25519Pub: crypto.x25519PubB64,
-          sharingEnabled: true,
-          joinedAt: 0,
-        )];
+    membersByCircle[c.id] = [
+      CircleMember(
+        circleId: c.id,
+        deviceId: deviceId,
+        role: 'owner',
+        displayName: deviceName,
+        avatarColor: color,
+        ed25519Pub: crypto.ed25519PubB64,
+        x25519Pub: crypto.x25519PubB64,
+        sharingEnabled: true,
+        joinedAt: 0,
+      ),
+    ];
     await _db?.upsertCircle(c);
     await _selectCircle(c.id);
     notifyListeners();
@@ -196,6 +296,7 @@ class AppState extends ChangeNotifier {
   Future<void> joinCircle(String code) async {
     final c = await api.joinCircle(code.trim().toUpperCase());
     circles.add(c);
+    hasCircleKey = false;
     await _db?.upsertCircle(c);
     await _selectCircle(c.id);
     await refreshCircle(c.id);
@@ -209,7 +310,8 @@ class AppState extends ChangeNotifier {
       final (circle, members) = await api.circleDetail(circleId);
       membersByCircle[circleId] = members;
       await _db?.upsertMembers(circleId, members);
-      if (_ownerId(circleId) == deviceId && await crypto.circleKey(circleId) == null) {
+      if (_ownerId(circleId) == deviceId &&
+          await crypto.circleKey(circleId) == null) {
         await _ensureOwnedCircleKey(circleId, circle);
       } else if (_ownerId(circleId) != deviceId) {
         await _tryFetchCircleKey(circleId);
@@ -223,11 +325,16 @@ class AppState extends ChangeNotifier {
 
   Future<void> grantCircleKeyTo(String memberId) async {
     final circleId = activeCircleId;
-    final member = activeMembers.where((m) => m.deviceId == memberId).firstOrNull;
+    final member = activeMembers
+        .where((m) => m.deviceId == memberId)
+        .firstOrNull;
     if (circleId == null || member == null) return;
     final key = await crypto.circleKey(circleId);
     if (key == null) return;
-    final blob = await crypto.sealCircleKeyForMember(base64Encode(key), member.x25519Pub);
+    final blob = await crypto.sealCircleKeyForMember(
+      base64Encode(key),
+      member.x25519Pub,
+    );
     await api.putKeyBlob(circleId, memberId, blob);
   }
 
@@ -266,13 +373,20 @@ class AppState extends ChangeNotifier {
   // -------------------------------------------------------------------------
 
   Future<void> _ingest(Envelope env) async {
+    // Replay protection: each envelope is processed at most once.
+    if (!_seenIds.add(env.id)) return;
+    if (_seenIds.length > 5000) {
+      _seenIds.remove(_seenIds.first);
+    }
     await _db?.upsertEnvelope(env);
     final key = await crypto.circleKey(env.circleId);
     if (key == null) {
       _pending.add(env);
       return;
     }
-    final sender = membersByCircle[env.circleId]?.where((m) => m.deviceId == env.deviceId).firstOrNull;
+    final sender = membersByCircle[env.circleId]
+        ?.where((m) => m.deviceId == env.deviceId)
+        .firstOrNull;
     if (sender == null) return;
     try {
       final open = await crypto.openEnvelope(
@@ -287,6 +401,30 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Processes envelopes queued while the circle key was missing.
+  void _flushPending() {
+    final queued = List<Envelope>.from(_pending);
+    _pending.clear();
+    for (final env in queued) {
+      unawaited(_ingest(env));
+    }
+  }
+
+  /// Re-fetch the circle key from the server (used by the "Retry" button
+  /// and by the housekeeping timer when the owner has granted access).
+  Future<bool> retryCircleKey() async {
+    final circleId = activeCircleId;
+    if (circleId == null) return false;
+    await refreshCircle(circleId);
+    final key = await crypto.circleKey(circleId);
+    if (key != null) {
+      _flushPending();
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
+
   void _dispatch(String circleId, Map<String, dynamic> open) {
     final data = (open['data'] as Map<String, dynamic>? ?? {});
     final kind = open['kind'] as String? ?? '';
@@ -294,6 +432,9 @@ class AppState extends ChangeNotifier {
     final ts = (open['ts'] as num?)?.toInt() ?? 0;
     switch (kind) {
       case 'location':
+        // Replay guard: ignore stale fixes (older than the latest we hold).
+        final current = positionsByDevice[sender];
+        if (current != null && ts <= current.ts) return;
         positionsByDevice[sender] = Position.fromData(data, ts: ts);
       case 'place':
         places[data['id'] as String? ?? sender] = Place.fromData(data);
@@ -306,18 +447,61 @@ class AppState extends ChangeNotifier {
           ts: ts,
         ));
       case 'checkin':
-        events.insert(0, (deviceId: sender, kind: 'checkin', text: data['text'] as String? ?? 'checked in', ts: ts));
+        events.insert(0, (
+          deviceId: sender,
+          kind: 'checkin',
+          text: data['text'] as String? ?? 'checked in',
+          ts: ts,
+        ));
       case 'sos':
-        events.insert(0, (deviceId: sender, kind: 'sos', text: data['text'] as String? ?? 'SOS', ts: ts));
+        events.insert(0, (
+          deviceId: sender,
+          kind: 'sos',
+          text: data['text'] as String? ?? 'SOS',
+          ts: ts,
+        ));
       case 'geofence':
         events.insert(0, (
           deviceId: sender,
           kind: 'geofence',
-          text: '${data['event'] == 'enter' ? 'arrived at' : 'left'} ${data['place_name'] ?? 'a place'}',
+          text:
+              '${data['event'] == 'enter' ? 'arrived at' : 'left'} ${data['place_name'] ?? 'a place'}',
+          ts: ts,
+        ));
+      case 'trip':
+        events.insert(0, (
+          deviceId: sender,
+          kind: 'trip',
+          text: _tripSummary(data),
+          ts: ts,
+        ));
+      case 'crash':
+        events.insert(0, (
+          deviceId: sender,
+          kind: 'crash',
+          text: 'possible crash detected at ${_fmtLatLng(data)}',
           ts: ts,
         ));
     }
+    if (events.length > 200) {
+      events.removeRange(200, events.length);
+    }
     notifyListeners();
+  }
+
+  static String _tripSummary(Map<String, dynamic> d) {
+    final km = ((d['distance_m'] as num?)?.toDouble() ?? 0) / 1000;
+    final maxKmh = ((d['max_speed_kmh'] as num?)?.toDouble() ?? 0).round();
+    final speeding = (d['speeding_count'] as num?)?.toInt() ?? 0;
+    return 'drove ${km.toStringAsFixed(1)} km · max $maxKmh km/h'
+        '${speeding > 0 ? ' · $speeding speeding event${speeding == 1 ? '' : 's'}' : ''}';
+  }
+
+  static String _fmtLatLng(Map<String, dynamic> d) {
+    final lat = (d['lat'] as num?)?.toDouble();
+    final lng = (d['lng'] as num?)?.toDouble();
+    if (lat == null || lng == null) return 'unknown location';
+    return '${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
   }
 
   void _startLiveStream(String circleId) {
@@ -349,15 +533,37 @@ class AppState extends ChangeNotifier {
     try {
       _tracker ??= AdaptiveTracker(onFix: _onTrackerFix);
       final key = await crypto.circleKey(activeCircleId!);
-      if (key == null) throw StateError('circle key missing — ask the owner to grant access');
+      if (key == null) {
+        throw StateError('circle key missing — ask the owner to grant access');
+      }
       await _tracker!.start();
-      _geofence = GeofenceEngine(places: places.values.toList(), onEvent: _onGeofenceEvent);
+      _geofence = GeofenceEngine(
+        places: places.values.toList(),
+        onEvent: _onGeofenceEvent,
+      );
+      _trips = TripDetector(
+        speedLimitKmh: speedingLimitKmh,
+        onTripEnded: _onTripEnded,
+      );
+      _crash = CrashDetector(onCrash: _onCrashConfirmed);
+      _accelSub = accelerometerEventStream().listen(
+        (e) => _crash?.onAcceleration(e.x, e.y, e.z),
+        onError: (_) {}, // devices without accelerometer: GPS-only detection
+      );
       tracking = true;
       notifyListeners();
     } catch (e) {
       lastError = '$e';
       notifyListeners();
     }
+  }
+
+  /// Persists the speeding threshold (applies to trips started afterwards).
+  Future<void> setSpeedingLimit(double kmh) async {
+    speedingLimitKmh = kmh;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('speeding_limit_kmh', kmh);
+    notifyListeners();
   }
 
   Future<void> setSharing(bool enabled) async {
@@ -370,7 +576,52 @@ class AppState extends ChangeNotifier {
   }
 
   void _onTrackerFix(Position fix) {
+    _trips?.onPosition(fix);
+    _crash?.onPosition(fix);
     unawaited(_shareFix(fix));
+  }
+
+  /// Posts the encrypted end-of-drive summary (only while sharing).
+  void _onTripEnded(TripSummary trip) {
+    final circleId = activeCircleId;
+    if (circleId == null || !sharing) return;
+    events.insert(0, (
+      deviceId: deviceId,
+      kind: 'trip',
+      text:
+          'drove ${(trip.distanceM / 1000).toStringAsFixed(1)} km'
+          ' · max ${trip.maxSpeedKmh.round()} km/h'
+          '${trip.speedingCount > 0 ? ' · ${trip.speedingCount} speeding' : ''}'
+          '${trip.hardBrakingCount > 0 ? ' · ${trip.hardBrakingCount} hard brake' : ''}',
+      ts: trip.endTs,
+    ));
+    if (events.length > 200) {
+      events.removeRange(200, events.length);
+    }
+    unawaited(_postDataEnvelope(circleId, 'trip', trip.toData()));
+    notifyListeners();
+  }
+
+  /// Confirmed crash: alert the circle even if location sharing is paused —
+  /// this is an emergency, not routine tracking.
+  void _onCrashConfirmed({
+    required double lat,
+    required double lng,
+    required int ts,
+  }) {
+    final circleId = activeCircleId;
+    if (circleId == null) return;
+    events.insert(0, (
+      deviceId: deviceId,
+      kind: 'crash',
+      text: 'possible crash detected — sending alert to circle',
+      ts: ts,
+    ));
+    if (events.length > 200) {
+      events.removeRange(200, events.length);
+    }
+    unawaited(_postDataEnvelope(circleId, 'crash', {'lat': lat, 'lng': lng}));
+    notifyListeners();
   }
 
   Future<void> _shareFix(Position fix) async {
@@ -395,8 +646,12 @@ class AppState extends ChangeNotifier {
       // On-device geofence evaluation happens on our own fixes.
       _geofence?.onPosition(fix);
       // Refresh place list occasionally (geofence engine snapshot).
-      if (places.isNotEmpty && (_geofence == null || _geofence!.places.length != places.length)) {
-        _geofence = GeofenceEngine(places: places.values.toList(), onEvent: _onGeofenceEvent);
+      if (places.isNotEmpty &&
+          (_geofence == null || _geofence!.places.length != places.length)) {
+        _geofence = GeofenceEngine(
+          places: places.values.toList(),
+          onEvent: _onGeofenceEvent,
+        );
       }
       notifyListeners();
     } catch (_) {
@@ -430,14 +685,29 @@ class AppState extends ChangeNotifier {
   // actions
   // -------------------------------------------------------------------------
 
-  Future<void> addPlace(String name, double lat, double lng, double radiusM) async {
+  Future<void> addPlace(
+    String name,
+    double lat,
+    double lng,
+    double radiusM,
+  ) async {
     final circleId = activeCircleId;
     if (circleId == null) return;
     final id = _genId();
-    final place = Place(id: id, name: name, lat: lat, lng: lng, radiusM: radiusM, ts: DateTime.now().millisecondsSinceEpoch);
+    final place = Place(
+      id: id,
+      name: name,
+      lat: lat,
+      lng: lng,
+      radiusM: radiusM,
+      ts: DateTime.now().millisecondsSinceEpoch,
+    );
     places[id] = place;
     await _postDataEnvelope(circleId, 'place', place.toData());
-    _geofence = GeofenceEngine(places: places.values.toList(), onEvent: _onGeofenceEvent);
+    _geofence = GeofenceEngine(
+      places: places.values.toList(),
+      onEvent: _onGeofenceEvent,
+    );
     notifyListeners();
   }
 
@@ -446,7 +716,10 @@ class AppState extends ChangeNotifier {
     if (circleId == null) return;
     places.remove(id);
     await _postDataEnvelope(circleId, 'place_del', {'id': id});
-    _geofence = GeofenceEngine(places: places.values.toList(), onEvent: _onGeofenceEvent);
+    _geofence = GeofenceEngine(
+      places: places.values.toList(),
+      onEvent: _onGeofenceEvent,
+    );
     notifyListeners();
   }
 
@@ -467,7 +740,12 @@ class AppState extends ChangeNotifier {
     final circleId = activeCircleId;
     if (circleId == null) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    events.insert(0, (deviceId: deviceId, kind: 'checkin', text: note.isEmpty ? 'checked in' : note, ts: now));
+    events.insert(0, (
+      deviceId: deviceId,
+      kind: 'checkin',
+      text: note.isEmpty ? 'checked in' : note,
+      ts: now,
+    ));
     await _postDataEnvelope(circleId, 'checkin', {'text': note});
     notifyListeners();
   }
@@ -477,7 +755,12 @@ class AppState extends ChangeNotifier {
     if (circleId == null) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     final pos = positionsByDevice[deviceId];
-    events.insert(0, (deviceId: deviceId, kind: 'sos', text: note.isEmpty ? 'SOS' : note, ts: now));
+    events.insert(0, (
+      deviceId: deviceId,
+      kind: 'sos',
+      text: note.isEmpty ? 'SOS' : note,
+      ts: now,
+    ));
     await _postDataEnvelope(circleId, 'sos', {
       'text': note,
       if (pos != null) 'lat': pos.lat,
@@ -486,7 +769,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _postDataEnvelope(String circleId, String kind, Map<String, dynamic> data) async {
+  Future<void> _postDataEnvelope(
+    String circleId,
+    String kind,
+    Map<String, dynamic> data,
+  ) async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final sealed = await crypto.sealEnvelope(
       circleId: circleId,
@@ -524,7 +811,10 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _wsSub?.cancel();
-    unawaited(_tracker?.stop());
+    _housekeepingTimer?.cancel();
+    _accelSub?.cancel();
+    _tracker?.stop();
+    _trips?.finish();
     super.dispose();
   }
 }

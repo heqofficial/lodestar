@@ -29,7 +29,8 @@ class PlacesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final places = state.places.values.toList()..sort((a, b) => a.name.compareTo(b.name));
+    final places = state.places.values.toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
     return Scaffold(
       appBar: AppBar(title: const Text('Places')),
       floatingActionButton: FloatingActionButton.extended(
@@ -44,9 +45,16 @@ class PlacesScreen extends StatelessWidget {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.location_on_outlined, size: 64, color: Colors.grey),
+                    const Icon(
+                      Icons.location_on_outlined,
+                      size: 64,
+                      color: Colors.grey,
+                    ),
                     const SizedBox(height: 12),
-                    Text('No places yet', style: Theme.of(context).textTheme.titleLarge),
+                    Text(
+                      'No places yet',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                     const SizedBox(height: 8),
                     Text(
                       'Add Home, School, Work… and Lodestar will alert the circle '
@@ -67,7 +75,10 @@ class PlacesScreen extends StatelessWidget {
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: const Color(0x224F7CFF),
-                      child: const Icon(Icons.location_on, color: Color(0xFF4F7CFF)),
+                      child: const Icon(
+                        Icons.location_on,
+                        color: Color(0xFF4F7CFF),
+                      ),
                     ),
                     title: Text(p.name),
                     subtitle: Text('${p.radiusM.round()} m radius'),
@@ -106,7 +117,9 @@ class _AddPlaceSheetState extends State<_AddPlaceSheet> {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -154,7 +167,8 @@ class _AddPlaceSheetState extends State<_AddPlaceSheet> {
                     ),
                     children: [
                       TileLayer(
-                        urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName: 'dev.lodestar.app',
                         maxNativeZoom: 19,
                       ),
@@ -165,7 +179,11 @@ class _AddPlaceSheetState extends State<_AddPlaceSheet> {
                               point: _picked!,
                               width: 40,
                               height: 40,
-                              child: const Icon(Icons.location_on, color: Color(0xFFE05D5D), size: 36),
+                              child: const Icon(
+                                Icons.location_on,
+                                color: Color(0xFFE05D5D),
+                                size: 36,
+                              ),
                             ),
                           ],
                         ),
@@ -179,8 +197,10 @@ class _AddPlaceSheetState extends State<_AddPlaceSheet> {
                           color: Colors.black87,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Text('Tap the map to drop the pin',
-                            style: TextStyle(color: Colors.white, fontSize: 12)),
+                        child: const Text(
+                          'Tap the map to drop the pin',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
                       ),
                     ),
                 ],
@@ -194,7 +214,9 @@ class _AddPlaceSheetState extends State<_AddPlaceSheet> {
                   return;
                 }
                 Navigator.pop(context, {
-                  'name': _nameCtrl.text.trim().isEmpty ? 'Place' : _nameCtrl.text.trim(),
+                  'name': _nameCtrl.text.trim().isEmpty
+                      ? 'Place'
+                      : _nameCtrl.text.trim(),
                   'lat': _picked!.latitude,
                   'lng': _picked!.longitude,
                   'radius': _radius,

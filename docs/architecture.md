@@ -50,6 +50,11 @@ Places live in the app, not the server. Each device compares its own fixes again
 - **ntfy (optional)** — the server can relay SOS/check-in/geofence events to a self-hosted ntfy topic per circle (payload is the encrypted envelope — safe to relay anywhere). Members can install the ntfy app and subscribe for push while Lodestar isn't running. iOS in-app APNs is roadmap.
 - **No Firebase, no Google Play Services dependency** for messaging.
 
+## Driving reports & crash alerting (on-device)
+
+- A `TripDetector` in the app recognizes trips (sustained ≥21 km/h), ends them after 90 s stationary, and produces a summary: distance, duration, top/avg speed, speeding episodes (≥5 s above the configurable threshold), hard-braking events (≥2.5 m/s²). Summaries are sealed as `trip` envelopes — the server never sees routes, only ciphertext.
+- A `CrashDetector` listens to the accelerometer and GPS: an impact (≥25 m/s² jolt, free-fall, or >8 m/s speed drop within 3 s) must be followed by the vehicle stopping for 20 s before a `crash` envelope is raised. Crash alerts bypass the sharing pause (emergencies), and the server pushes them (default `LODESTAR_PUSH_KINDS=sos,geofence,crash`).
+
 ## Battery strategy
 
 The app adapts its sampling to movement:

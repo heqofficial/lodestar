@@ -10,12 +10,17 @@ import 'screens/onboarding_screen.dart';
 import 'screens/places_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/sos_screen.dart';
+import 'screens/trips_screen.dart';
 import 'state/app_state.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final state = AppState();
   await state.init();
+  // App restart: restore circles, members, keys and live positions.
+  if (state.registered) {
+    await state.load();
+  }
   runApp(LodestarApp(state: state));
 }
 
@@ -38,11 +43,26 @@ class LodestarApp extends StatelessWidget {
           '/': (_) => const CirclesScreen(),
           '/map': (_) => const MapScreen(),
           '/places': (_) => const PlacesScreen(),
-          '/history': (_) => const HistoryScreen(),
           '/chat': (_) => const ChatScreen(),
           '/sos': (_) => const SosScreen(),
           '/settings': (_) => const SettingsScreen(),
           '/members': (_) => const MembersScreen(),
+        },
+        onGenerateRoute: (settings) {
+          // Routes that accept a member id argument (deviceId string).
+          if (settings.name == '/history') {
+            return MaterialPageRoute(
+              builder: (_) =>
+                  HistoryScreen(initialMemberId: settings.arguments as String?),
+            );
+          }
+          if (settings.name == '/trips') {
+            return MaterialPageRoute(
+              builder: (_) =>
+                  TripsScreen(initialMemberId: settings.arguments as String?),
+            );
+          }
+          return null;
         },
       ),
     );
@@ -60,14 +80,18 @@ class LodestarApp extends StatelessWidget {
       ),
       cardTheme: const CardThemeData(
         elevation: 0.5,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.all(Radius.circular(14))),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size(0, 48),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
     );
   }
-}
+}

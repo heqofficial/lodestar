@@ -31,11 +31,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     });
     try {
       final state = context.read<AppState>();
-      await state.register(
-        baseUrl: _serverCtrl.text,
-        name: _nameCtrl.text,
-      );
+      await state.register(baseUrl: _serverCtrl.text, name: _nameCtrl.text);
       await state.load();
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed('/');
+      }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -56,7 +56,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.auto_awesome, size: 72, color: Color(0xFF4F7CFF)),
+                  const Icon(
+                    Icons.auto_awesome,
+                    size: 72,
+                    color: Color(0xFF4F7CFF),
+                  ),
                   const SizedBox(height: 12),
                   const Text(
                     'Lodestar',
@@ -67,7 +71,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   Text(
                     'Your family\u2019s guiding star.\nFree, open-source, end-to-end encrypted.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Theme.of(context).colorScheme.outline),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
                   ),
                   const SizedBox(height: 32),
                   TextField(
@@ -75,7 +81,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     keyboardType: TextInputType.url,
                     decoration: const InputDecoration(
                       labelText: 'Your server address',
-                      hintText: 'https://lodestar.example.com or http://192.168.1.50:8443',
+                      hintText:
+                          'https://lodestar.example.com or http://192.168.1.50:8443',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.dns_outlined),
                     ),
@@ -95,7 +102,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     Text(
                       _error!,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Theme.of(context).colorScheme.error),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
                   ],
                   const SizedBox(height: 24),
@@ -103,7 +112,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     onPressed: _busy ? null : _submit,
                     icon: _busy
                         ? const SizedBox(
-                            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : const Icon(Icons.link),
                     label: const Text('Connect'),
                   ),

@@ -15,7 +15,7 @@ Life360 has been caught selling precise family location data to a dozen data bro
 
 ## Feature set
 
-**MVP (implemented):**
+**Implemented:**
 - Circles (invite by code) with member avatars and colors
 - Live family map (OpenStreetMap, no paid API keys)
 - Adaptive background tracking with motion-aware intervals
@@ -24,11 +24,13 @@ Life360 has been caught selling precise family location data to a dozen data bro
 - Location history timeline (decrypted on-device only)
 - Circle chat (E2E encrypted)
 - One-tap check-ins and SOS broadcast
-- Per-member sharing controls (pause, hide at places, battery mode)
-- Self-hosted push via [ntfy](https://ntfy.sh) (optional)
+- **Driving reports** — encrypted end-of-drive summaries: distance, duration, top/avg speed, speeding episodes (≥5 s over your threshold), hard braking (≥2.5 m/s²). Free forever — Life360 paywalls this.
+- **Crash alerting** — on-device impact detection (accelerometer jolt or GPS speed-drop) confirmed by the vehicle stopping, then an encrypted crash alert to the circle (pushes even if sharing is paused — it's an emergency).
+- Per-member sharing controls (pause, battery mode, speeding threshold)
+- Self-hosted push via [ntfy](https://ntfy.sh) (optional; crash + SOS alert by default)
 - Minimal web dashboard (server status, no locations)
 
-**Roadmap:** driving reports, crash detection, Home Assistant add-on, wearables, multi-language, iOS APNs push in-app, public instance.
+**Roadmap:** Home Assistant add-on, wearables, multi-language, iOS APNs push in-app, public instance, pet circles.
 
 ## Repository layout
 

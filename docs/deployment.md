@@ -57,6 +57,7 @@ All configuration is via env vars (or flags, see `./lodestard -h`):
 | `LODESTAR_NTFY_URL` | (empty) | Self-hosted ntfy base URL to relay alerts to (e.g. `http://ntfy:80`) |
 | `LODESTAR_NTFY_TOKEN` | (empty) | ntfy access token, if required |
 | `LODESTAR_ADMIN_TOKEN` | (empty) | If set, `/admin` requires `?token=` |
+| `LODESTAR_PUSH_KINDS` | `sos,geofence,crash` | Envelope kinds that trigger a push relay |
 | `LODESTAR_APNS_KEY_PATH` | (empty) | APNs .p8 key path (enables iOS push — roadmap) |
 | `LODESTAR_APNS_TEAM_ID` | (empty) | Apple team ID |
 | `LODESTAR_APNS_KEY_ID` | (empty) | APNs key ID |

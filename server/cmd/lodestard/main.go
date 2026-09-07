@@ -28,7 +28,7 @@ func main() {
 	ntfyURL := fs.String("ntfy-url", envOr("LODESTAR_NTFY_URL", ""), "ntfy base URL to relay alerts (empty = disabled)")
 	ntfyToken := fs.String("ntfy-token", envOr("LODESTAR_NTFY_TOKEN", ""), "ntfy access token (optional)")
 	adminToken := fs.String("admin-token", envOr("LODESTAR_ADMIN_TOKEN", ""), "token required for /admin (empty = open)")
-	pushKinds := fs.String("push-kinds", envOr("LODESTAR_PUSH_KINDS", "sos,geofence"), "comma-separated envelope kinds that trigger push")
+	pushKinds := fs.String("push-kinds", envOr("LODESTAR_PUSH_KINDS", "sos,geofence,crash"), "comma-separated envelope kinds that trigger push")
 	apnsKey := fs.String("apns-key", envOr("LODESTAR_APNS_KEY_PATH", ""), "APNs .p8 key path (enables iOS push)")
 	apnsTeam := fs.String("apns-team", envOr("LODESTAR_APNS_TEAM_ID", ""), "Apple team ID")
 	apnsKeyID := fs.String("apns-key-id", envOr("LODESTAR_APNS_KEY_ID", ""), "APNs key ID")

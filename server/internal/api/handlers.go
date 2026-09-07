@@ -85,6 +85,10 @@ type registerRequest struct {
 }
 
 func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
+	if !s.regLimiter.allow(clientIP(r)) {
+		writeErr(w, http.StatusTooManyRequests, "too many registrations from this address")
+		return
+	}
 	var req registerRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad json")
@@ -279,7 +283,9 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 			"checkin":  "✅ Check-in from " + dev.Name,
 		}[req.Kind]
 		go func() {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			// NB: use context.Background(), not r.Context() — the request
+			// context is cancelled as soon as this handler returns.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_ = s.push.Send(ctx, push.Request{
 				Title:    title,
@@ -349,7 +355,7 @@ func (s *Server) handlePutKeyBlob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "store failed")
 		return
 	}
-	writeJSON(w, http.StatusNoContent, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleGetKeyBlob(w http.ResponseWriter, r *http.Request) {
@@ -449,31 +455,20 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "member not found")
 		return
 	}
-	writeJSON(w, http.StatusNoContent, nil)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- shared helpers --------------------------------------------------------
 
-// mustBeMember verifies membership; on failure it writes the error response
-// and returns an error so callers can bail.
+// mustBeMember verifies membership (single query) and returns the role; on
+// failure it writes the error response and returns an error so callers bail.
 func (s *Server) mustBeMember(w http.ResponseWriter, circleID, deviceID string) (*store.Member, error) {
-	ok, err := s.store.IsMember(circleID, deviceID)
-	if err != nil || !ok {
+	role, err := s.store.MemberRole(circleID, deviceID)
+	if err != nil {
 		writeErr(w, http.StatusForbidden, "not a member")
 		return nil, errors.New("not a member")
 	}
-	members, err := s.store.Members(circleID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "members failed")
-		return nil, err
-	}
-	for i := range members {
-		if members[i].DeviceID == deviceID {
-			return &members[i], nil
-		}
-	}
-	writeErr(w, http.StatusForbidden, "not a member")
-	return nil, errors.New("not a member")
+	return &store.Member{CircleID: circleID, DeviceID: deviceID, Role: role}, nil
 }
 
 func (s *Server) ntfyEnabled() bool {

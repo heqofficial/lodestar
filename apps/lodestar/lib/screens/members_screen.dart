@@ -12,7 +12,9 @@ class MembersScreen extends StatelessWidget {
 
   Future<void> _grantKey(BuildContext context, String memberId) async {
     final state = context.read<AppState>();
-    final member = state.activeMembers.where((m) => m.deviceId == memberId).firstOrNull;
+    final member = state.activeMembers
+        .where((m) => m.deviceId == memberId)
+        .firstOrNull;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -22,8 +24,14 @@ class MembersScreen extends StatelessWidget {
           'locations, places and chat. Only the owner can do this.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Grant')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Grant'),
+          ),
         ],
       ),
     );
@@ -31,7 +39,9 @@ class MembersScreen extends StatelessWidget {
       await state.grantCircleKeyTo(memberId);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('🔑 Key granted — they can now read the circle')),
+          const SnackBar(
+            content: Text('🔑 Key granted — they can now read the circle'),
+          ),
         );
       }
     }
@@ -39,14 +49,21 @@ class MembersScreen extends StatelessWidget {
 
   Future<void> _removeMember(BuildContext context, String memberId) async {
     final state = context.read<AppState>();
-    final member = state.activeMembers.where((m) => m.deviceId == memberId).firstOrNull;
+    final member = state.activeMembers
+        .where((m) => m.deviceId == memberId)
+        .firstOrNull;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Remove member?'),
-        content: Text('${member?.displayName ?? 'This member'} will lose access to the circle.'),
+        content: Text(
+          '${member?.displayName ?? 'This member'} will lose access to the circle.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.pop(ctx, true),
@@ -61,7 +78,9 @@ class MembersScreen extends StatelessWidget {
         await state.refreshCircle(state.activeCircleIdSafe);
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('$e')));
         }
       }
     }
@@ -85,17 +104,24 @@ class MembersScreen extends StatelessWidget {
               child: ListTile(
                 leading: const Icon(Icons.history, color: Color(0xFF4F7CFF)),
                 title: const Text('Invite someone'),
-                subtitle: const Text('Share the code — owner must grant the key after'),
+                subtitle: const Text(
+                  'Share the code — owner must grant the key after',
+                ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () async {
-                  final code = await state.api.createInvite(state.activeCircleIdSafe);
+                  final code = await state.api.createInvite(
+                    state.activeCircleIdSafe,
+                  );
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text('Invite code: $code'),
-                        action: SnackBarAction(label: 'Copy', onPressed: () {
-                          Clipboard.setData(ClipboardData(text: code));
-                        }),
+                        action: SnackBarAction(
+                          label: 'Copy',
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: code));
+                          },
+                        ),
                       ),
                     );
                   }
@@ -107,7 +133,12 @@ class MembersScreen extends StatelessWidget {
           final mine = m.deviceId == state.deviceId;
           return Card(
             child: ListTile(
-              leading: MemberAvatar(name: m.displayName, color: m.avatarColor, size: 40, showPause: !m.sharingEnabled),
+              leading: MemberAvatar(
+                name: m.displayName,
+                color: m.avatarColor,
+                size: 40,
+                showPause: !m.sharingEnabled,
+              ),
               title: Text(m.displayName),
               subtitle: Text(
                 mine
@@ -121,7 +152,10 @@ class MembersScreen extends StatelessWidget {
                         if (v == 'remove') _removeMember(context, m.deviceId);
                       },
                       itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'grant', child: Text('🔑 Grant circle key')),
+                        PopupMenuItem(
+                          value: 'grant',
+                          child: Text('🔑 Grant circle key'),
+                        ),
                         PopupMenuItem(value: 'remove', child: Text('Remove')),
                       ],
                     )

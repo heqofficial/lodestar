@@ -4,9 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-)
-
-// EnvelopeKinds are the only envelope kinds the server accepts.
+) // EnvelopeKinds are the only envelope kinds the server accepts.
 var EnvelopeKinds = map[string]bool{
 	"location":  true,
 	"message":   true,
@@ -17,6 +15,8 @@ var EnvelopeKinds = map[string]bool{
 	"place_del": true,
 	"circlekey": true,
 	"presence":  true,
+	"trip":      true, // end-of-drive summary (encrypted)
+	"crash":     true, // possible crash alert (encrypted)
 }
 
 // IsEnvelopeKind reports whether kind is known.
@@ -52,7 +52,10 @@ func (s *Store) AddEnvelope(e Envelope) (Envelope, error) {
 // Envelopes fetches envelopes for a circle, newest first, with optional
 // kind filter and "since" cursor (exclusive).
 func (s *Store) Envelopes(circleID string, sinceTS int64, kind string, limit int) ([]Envelope, error) {
-	if limit <= 0 || limit > 1000 {
+	if limit > 1000 {
+		limit = 1000
+	}
+	if limit <= 0 {
 		limit = 100
 	}
 	q := `SELECT id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at

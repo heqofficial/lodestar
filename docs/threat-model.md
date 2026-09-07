@@ -17,7 +17,7 @@ Lodestar moves the most sensitive data a family has: everyone's location, contin
 
 ### 1. The server never learns locations, places, or messages (core guarantee)
 
-- All circle content travels as envelopes sealed with the circle key (ChaCha20-Poly1305, random nonces).
+- All circle content — locations, chat, places, check-ins, SOS, driving-trip summaries, crash alerts — travels as envelopes sealed with the circle key (ChaCha20-Poly1305, random nonces). Trip summaries and crash alerts contain only start/end points and derived statistics, still sealed; the server cannot read them.
 - The circle key is only ever stored (a) on member devices in the OS keystore, or (b) inside envelopes sealed to member public keys.
 - The server's database contains ciphertext plus metadata: `(circle, device, kind, ts)`. Metadata alone reveals *that* a member moved at some cadence, but not *where*.
 - Geofences are evaluated on-device. Place coordinates exist only inside encrypted envelopes.

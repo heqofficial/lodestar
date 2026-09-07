@@ -41,11 +41,43 @@ class SettingsScreen extends StatelessWidget {
                 ListTile(
                   leading: const Icon(Icons.play_circle_outline),
                   title: const Text('Start background tracking'),
-                  subtitle: const Text('Runs with a visible notification, battery-aware'),
+                  subtitle: const Text(
+                    'Runs with a visible notification, battery-aware',
+                  ),
                   trailing: state.tracking
                       ? const Icon(Icons.check_circle, color: Color(0xFF2E9E5B))
                       : const Icon(Icons.chevron_right),
                   onTap: () => state.startTracking(),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.speed, size: 16),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Speeding alert: ${state.speedingLimitKmh.round()} km/h',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                      Slider(
+                        value: state.speedingLimitKmh.clamp(60, 130),
+                        min: 60,
+                        max: 130,
+                        divisions: 14,
+                        label: '${state.speedingLimitKmh.round()} km/h',
+                        onChanged: (v) => state.setSpeedingLimit(v),
+                      ),
+                      Text(
+                        'Applied to new trips. Hard braking and crash detection run automatically.',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -58,12 +90,19 @@ class SettingsScreen extends StatelessWidget {
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-                  child: Text('Circle', style: Theme.of(context).textTheme.labelLarge),
+                  child: Text(
+                    'Circle',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
                 ),
                 ListTile(
                   leading: const Icon(Icons.people_outline),
                   title: Text('${state.activeMembers.length} members'),
-                  subtitle: Text(state.activeCircleIdSafe.isEmpty ? 'No active circle' : 'Tap a member to grant the key'),
+                  subtitle: Text(
+                    state.activeCircleIdSafe.isEmpty
+                        ? 'No active circle'
+                        : 'Tap a member to grant the key',
+                  ),
                   onTap: () => Navigator.of(context).pushNamed('/members'),
                 ),
                 if (keyGrantNeeded > 0 && state.ownerId == state.deviceId)
@@ -72,7 +111,10 @@ class SettingsScreen extends StatelessWidget {
                     child: Text(
                       'You own this circle. New members need you to grant them the encrypted key '
                       '(Members → grant). Without it they cannot read anything.',
-                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.outline),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
                     ),
                   ),
               ],
@@ -86,20 +128,30 @@ class SettingsScreen extends StatelessWidget {
                 ListTile(
                   leading: self == null
                       ? const Icon(Icons.person_outline)
-                      : MemberAvatar(name: self.displayName, color: self.avatarColor, size: 36),
-                  title: Text(state.deviceName.isEmpty ? 'This device' : state.deviceName),
+                      : MemberAvatar(
+                          name: self.displayName,
+                          color: self.avatarColor,
+                          size: 36,
+                        ),
+                  title: Text(
+                    state.deviceName.isEmpty ? 'This device' : state.deviceName,
+                  ),
                   subtitle: Text('Server: ${state.serverUrl}'),
                 ),
                 ListTile(
                   leading: const Icon(Icons.key_outlined),
                   title: const Text('My keys'),
-                  subtitle: const Text('Ed25519 + X25519, stored in the OS keystore'),
+                  subtitle: const Text(
+                    'Ed25519 + X25519, stored in the OS keystore',
+                  ),
                   onTap: () => _showKeys(context, state),
                 ),
                 ListTile(
                   leading: const Icon(Icons.verified_user_outlined),
                   title: const Text('Privacy & threat model'),
-                  subtitle: const Text('End-to-end encryption — even the server can\u2019t read locations'),
+                  subtitle: const Text(
+                    'End-to-end encryption — even the server can\u2019t read locations',
+                  ),
                   onTap: () => _showPrivacy(context),
                 ),
               ],
@@ -126,15 +178,19 @@ class SettingsScreen extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Identity keys are generated on this device and never leave it. '
-                'Back them up by copying the fingerprints:'),
+            const Text(
+              'Identity keys are generated on this device and never leave it. '
+              'Back them up by copying the fingerprints:',
+            ),
             const SizedBox(height: 12),
             SelectableText('Ed25519:  ${state.crypto.ed25519PubB64}'),
             const SizedBox(height: 8),
             SelectableText('X25519:   ${state.crypto.x25519PubB64}'),
             const SizedBox(height: 12),
-            const Text('If this device is lost, reinstall the app and rejoin with the invite code — '
-                'the owner will re-grant the circle key.'),
+            const Text(
+              'If this device is lost, reinstall the app and rejoin with the invite code — '
+              'the owner will re-grant the circle key.',
+            ),
           ],
         ),
         actions: [
@@ -166,7 +222,11 @@ class SettingsScreen extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () {
-              Clipboard.setData(const ClipboardData(text: 'https://github.com/heqofficial/lodestar'));
+              Clipboard.setData(
+                const ClipboardData(
+                  text: 'https://github.com/heqofficial/lodestar',
+                ),
+              );
               Navigator.pop(ctx);
             },
             child: const Text('Copy repo link'),
