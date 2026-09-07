@@ -11,6 +11,11 @@ class LocalDb {
 
   static LocalDb? _instance;
 
+  /// Local envelope cache window: matches the server default so the phone
+  /// never grows without bound (ciphertext, but it is still disk).
+  static const _retentionDays = 90;
+  static const _maxPerCircle = 20000;
+
   static Future<LocalDb> open() async {
     if (_instance != null) return _instance!;
     final dir = await getDatabasesPath();
@@ -55,7 +60,33 @@ class LocalDb {
       },
     );
     _instance = LocalDb._(db);
+    await _instance!.prune();
     return _instance!;
+  }
+
+  /// Bounds the cache: drops envelopes older than 90 days and, per circle,
+  /// everything beyond the newest 20k. Cheap at family scale; run at open
+  /// and daily from housekeeping.
+  Future<void> prune() async {
+    final cutoff =
+        DateTime.now()
+            .subtract(const Duration(days: _retentionDays))
+            .millisecondsSinceEpoch;
+    await _db.delete('envelopes', where: 'ts < ?', whereArgs: [cutoff]);
+    final circles = await _db.query(
+      'envelopes',
+      columns: ['circle_id'],
+      distinct: true,
+    );
+    for (final row in circles) {
+      final id = row['circle_id'] as String;
+      await _db.rawDelete(
+        'DELETE FROM envelopes WHERE circle_id = ? AND id NOT IN '
+        '(SELECT id FROM envelopes WHERE circle_id = ? '
+        'ORDER BY ts DESC LIMIT $_maxPerCircle)',
+        [id, id],
+      );
+    }
   }
 
   Future<void> upsertEnvelope(Envelope e) async {

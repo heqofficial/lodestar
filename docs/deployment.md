@@ -59,6 +59,7 @@ All configuration is via env vars (or flags, see `./lodestard -h`):
 | `LODESTAR_ADMIN_TOKEN` | (empty) | If set, `/admin` requires `?token=` |
 | `LODESTAR_PUSH_KINDS` | `sos,geofence,crash` | Envelope kinds that trigger a push relay |
 | `LODESTAR_RETENTION_DAYS` | `90` | Prune location history older than N days (`0` = keep forever). `sos`/`crash` alerts are always kept |
+| `LODESTAR_LOG_JSON` | (unset) | `1` for JSON structured logs (easy log-shipping); default is human-readable text |
 | `LODESTAR_APNS_KEY_PATH` | (empty) | APNs .p8 key path (enables iOS push — roadmap) |
 | `LODESTAR_APNS_TEAM_ID` | (empty) | Apple team ID |
 | `LODESTAR_APNS_KEY_ID` | (empty) | APNs key ID |
@@ -69,7 +70,7 @@ All configuration is via env vars (or flags, see `./lodestard -h`):
 
 By default the server prunes location history older than **90 days** (hourly, on the envelope's own timestamp). Emergency alerts (`sos`, `crash`) are never pruned. To keep everything forever, set `LODESTAR_RETENTION_DAYS=0` — storage grows ~15–20 MB/year per actively-driving device (a handful of KiB per envelope).
 
-The server also enforces hard bounds so a single device can't bloat the DB: per-kind envelope throttles (30/min for location, 6/min for anything else), a 64 KiB envelope cap, and exact-duplicate rejection (retries are idempotent, replay doesn't duplicate rows).
+The server also enforces hard bounds so a single device can't bloat the DB: per-kind envelope throttles (30/min for location, 6/min for anything else), a 64 KiB envelope cap, and exact-duplicate rejection (retries are idempotent, replay doesn't duplicate rows). Phones prune their own envelope cache the same way (90 days / 20k per circle).
 
 ## Upgrades & backups
 
@@ -86,7 +87,7 @@ Restoring the DB restores envelopes (history); members' keys survive independent
 
 ## Family rollout checklist
 
-1. [ ] Server up (any option above); test `curl http://host:8443/healthz` → `{"status":"ok"}`
+1. [ ] Server up (any option above); test `curl http://host:8443/healthz` → `{"status":"ok"}` (this also probes the database — `503` means the store is wedged; Docker restarts it automatically via `HEALTHCHECK`)
 2. [ ] Everyone installs the app (Android: APK/F-Droid; iOS: TestFlight once a build exists)
 3. [ ] First launch → enter server URL → create your circle
 4. [ ] Share the invite code with family (they get their own keys on their own phones)

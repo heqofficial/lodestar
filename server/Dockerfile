@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 # Cache dependencies first.
 COPY go.mod go.sum ./
@@ -16,5 +16,8 @@ WORKDIR /data
 COPY --from=build /out/lodestard /usr/local/bin/lodestard
 EXPOSE 8443
 VOLUME ["/data"]
+# Real probe: only healthy when the store answers (busybox wget ships with alpine).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -q -O - http://127.0.0.1:8443/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/lodestard"]
 CMD ["-addr", ":8443", "-data", "/data/lodestar.db"]

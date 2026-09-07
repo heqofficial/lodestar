@@ -25,7 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -270,7 +270,7 @@ func (m *Multi) Send(ctx context.Context, req Request) error {
 	var firstErr error
 	for _, s := range m.senders {
 		if err := s.Send(ctx, req); err != nil {
-			log.Printf("push: %v", err)
+			slog.Warn("push failed", "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}

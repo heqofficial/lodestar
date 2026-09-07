@@ -8,7 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +23,8 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(newHandler()))
+
 	fs := flag.NewFlagSet("lodestard", flag.ExitOnError)
 	addr := fs.String("addr", envOr("LODESTAR_ADDR", ":8443"), "listen address")
 	dsn := fs.String("data", envOr("LODESTAR_DSN", "lodestar.db"), "SQLite database path")
@@ -40,14 +42,15 @@ func main() {
 
 	st, err := store.Open(*dsn)
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		slog.Error("store open", "err", err)
+		os.Exit(1)
 	}
 	defer st.Close()
 
 	var senders []push.Sender
 	if *ntfyURL != "" {
 		senders = append(senders, push.NewNtfy(*ntfyURL, *ntfyToken))
-		log.Printf("ntfy push enabled -> %s", *ntfyURL)
+		slog.Info("ntfy push enabled", "url", *ntfyURL)
 	}
 	if *apnsKey != "" {
 		a, err := push.NewAPNs(push.APNsConfig{
@@ -58,10 +61,11 @@ func main() {
 			Env:     *apnsEnv,
 		})
 		if err != nil {
-			log.Fatalf("apns: %v", err)
+			slog.Error("apns init", "err", err)
+			os.Exit(1)
 		}
 		senders = append(senders, a)
-		log.Printf("apns push enabled (%s)", *apnsEnv)
+		slog.Info("apns push enabled", "env", *apnsEnv)
 	}
 
 	if *retentionDays > 0 {
@@ -75,6 +79,11 @@ func main() {
 		}()
 	}
 
+	if err := st.Ping(context.Background()); err != nil {
+		slog.Error("store ping", "err", err)
+		os.Exit(1)
+	}
+
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           api.New(st, push.NewMulti(senders...), *adminToken, strings.Split(*pushKinds, ",")).Handler(),
@@ -86,20 +95,31 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("lodestard listening on %s", *addr)
+		slog.Info("listening", "addr", *addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server: %v", err)
+			slog.Error("server", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down…")
+	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
+		slog.Warn("shutdown", "err", err)
 	}
 	fmt.Println("bye")
+}
+
+// newHandler selects structured logging: JSON when LODESTAR_LOG_JSON=1,
+// human-readable text otherwise.
+func newHandler() slog.Handler {
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	if os.Getenv("LODESTAR_LOG_JSON") == "1" {
+		return slog.NewJSONHandler(os.Stderr, opts)
+	}
+	return slog.NewTextHandler(os.Stderr, opts)
 }
 
 // runPrune removes envelopes older than the retention window; sos/crash
@@ -107,11 +127,11 @@ func main() {
 func runPrune(st *store.Store, days int) {
 	n, err := st.PruneEnvelopes(time.Now().AddDate(0, 0, -days).UnixMilli())
 	if err != nil {
-		log.Printf("prune: %v", err)
+		slog.Warn("prune", "err", err)
 		return
 	}
 	if n > 0 {
-		log.Printf("pruned %d envelopes older than %d days", n, days)
+		slog.Info("pruned", "n", n, "days", days)
 	}
 }
 

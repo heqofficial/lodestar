@@ -10,7 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -48,6 +48,12 @@ func randID(n int) string {
 // --- health & admin --------------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Real probe: a green healthz must mean the store answers too, so
+	// orchestrators (Docker HEALTHCHECK) restart a wedged server.
+	if err := s.pingDB(); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "db unavailable")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -348,7 +354,7 @@ func (s *Server) handleLatestEnvelopes(w http.ResponseWriter, r *http.Request) {
 	}
 	envs, err := s.store.LatestPerDevice(circleID)
 	if err != nil {
-		log.Printf("latest per device: %v", err)
+		slog.Warn("latest per device", "err", err)
 		writeErr(w, http.StatusInternalServerError, "query failed")
 		return
 	}

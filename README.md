@@ -1,5 +1,7 @@
 # Lodestar ⭐
 
+![CI](https://github.com/heqofficial/lodestar/actions/workflows/ci.yml/badge.svg)
+
 **Your family's guiding star.** A free, open-source, end-to-end-encrypted family location app — Life360's usefulness without the surveillance business model.
 
 - 🔒 **Private by architecture** — locations are end-to-end encrypted. Even your own server only stores ciphertext and can never see where anyone is.
@@ -107,8 +109,8 @@ Read the full [threat model](docs/threat-model.md) and [architecture](docs/archi
 
 ## Development
 
-- `server/` — Go 1.24+, `go test ./...`
-- `apps/lodestar/` — Flutter 3.29+, `flutter analyze && flutter test`
+- `server/` — Go 1.25+, `go vet ./... && go test -race ./...` (fuzz: `go test -fuzz=Fuzz -fuzztime=10s ./internal/api`)
+- `apps/lodestar/` — Flutter 3.47+ (Dart 3.9), `flutter analyze && flutter test`
 - CI runs both on every push (GitHub Actions)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architecture.md).

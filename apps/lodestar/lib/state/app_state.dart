@@ -63,6 +63,10 @@ class AppState extends ChangeNotifier {
   bool sharing = true;
   String? lastError;
 
+  /// True while the initial sync (circles, members, keys) is running after
+  /// an app restart. UI shows a loading state instead of a blank screen.
+  bool booting = false;
+
   /// True once this device holds the active circle's key (sync mirror of the
   /// keystore, kept current by the key-management paths).
   bool hasCircleKey = false;
@@ -153,23 +157,29 @@ class AppState extends ChangeNotifier {
   Future<void> load() async {
     _db = await _dbFuture;
     if (!registered) return;
+    booting = true;
+    notifyListeners();
     _api = ApiClient(baseUrl: serverUrl, token: token);
     try {
       final list = await api.listCircles();
       circles
         ..clear()
         ..addAll(list);
-      for (final c in list) {
-        await _db!.upsertCircle(c);
-        final (circle, members) = await api.circleDetail(c.id);
-        membersByCircle[c.id] = members;
-        await _db!.upsertMembers(c.id, members);
-        if (_ownerId(c.id) == deviceId) {
-          await _ensureOwnedCircleKey(c.id, circle);
-        } else {
-          await _tryFetchCircleKey(c.id);
-        }
-      }
+      // Per-circle sync runs concurrently: N circles with a slow link must
+      // not cost N sequential round trips.
+      await Future.wait(
+        list.map((c) async {
+          await _db!.upsertCircle(c);
+          final (circle, members) = await api.circleDetail(c.id);
+          membersByCircle[c.id] = members;
+          await _db!.upsertMembers(c.id, members);
+          if (_ownerId(c.id) == deviceId) {
+            await _ensureOwnedCircleKey(c.id, circle);
+          } else {
+            await _tryFetchCircleKey(c.id);
+          }
+        }),
+      );
       if (circles.isNotEmpty && activeCircleId == null) {
         activeCircleId = circles.first.id;
       }
@@ -177,9 +187,10 @@ class AppState extends ChangeNotifier {
         await _loadCircleState(activeCircleId!);
       }
       _startHousekeeping();
-      notifyListeners();
     } catch (e) {
       lastError = '$e';
+    } finally {
+      booting = false;
       notifyListeners();
     }
   }
@@ -188,9 +199,18 @@ class AppState extends ChangeNotifier {
   ///  * joiner without a key: keep asking the server until the owner grants one
   ///  * owner: notice new members and remind to grant keys
   void _startHousekeeping() {
+    var lastPruneDay = DateTime.now().day;
     _housekeepingTimer ??= Timer.periodic(const Duration(seconds: 20), (
       _,
     ) async {
+      // Bound the on-device envelope cache once per day.
+      final now = DateTime.now();
+      if (now.day != lastPruneDay) {
+        lastPruneDay = now.day;
+        try {
+          await _db?.prune();
+        } catch (_) {}
+      }
       final circleId = activeCircleId;
       if (circleId == null) return;
       final key = await crypto.circleKey(circleId);

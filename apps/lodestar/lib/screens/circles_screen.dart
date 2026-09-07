@@ -51,7 +51,9 @@ class CirclesScreen extends StatelessWidget {
     final state = context.watch<AppState>();
     return Scaffold(
       appBar: AppBar(title: const Text('Your circles')),
-      body: state.circles.isEmpty
+      body: state.booting
+          ? const Center(child: CircularProgressIndicator())
+          : state.circles.isEmpty
           ? const _EmptyState()
           : ListView.separated(
               padding: const EdgeInsets.all(16),

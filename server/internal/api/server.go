@@ -7,13 +7,14 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"runtime/debug"
@@ -122,6 +123,13 @@ func (s *Server) Handler() http.Handler {
 	return recoverer(logRequests(corsHeaders(mux)))
 }
 
+// pingDB is the health-check probe: verifies the store answers within 2s.
+func (s *Server) pingDB() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.store.Ping(ctx)
+}
+
 // ---------------------------------------------------------------------------
 // middleware
 // ---------------------------------------------------------------------------
@@ -141,7 +149,12 @@ func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic serving %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				slog.Error("panic",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"err", rec,
+					"stack", string(debug.Stack()),
+				)
 				writeErr(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
@@ -188,12 +201,19 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-// corsHeaders keeps web tools (and the future dashboard) working with the API.
+// corsHeaders keeps web tools (and the future dashboard) working with the API
+// and applies baseline security headers to every response.
 func corsHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		// API responses carry identity-adjacent data: never let proxies or
+		// browsers cache them, and never let them sniff types or frame us.
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -202,13 +222,43 @@ func corsHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// statusRecorder captures the response status for structured request logs.
+// It forwards Hijacker (needed by the WebSocket upgrade) and Flusher to the
+// underlying writer.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+func (sr *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return sr.ResponseWriter.(http.Hijacker).Hijack()
+}
+
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		// Keep the log quiet for high-frequency location traffic.
-		if !strings.Contains(r.URL.Path, "/envelopes") {
-			log.Printf("%s %s (%s)", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sr, r)
+		// Keep the log quiet for high-frequency location traffic (it would
+		// otherwise dominate every log line); errors still surface.
+		if !strings.Contains(r.URL.Path, "/envelopes") || sr.status >= 400 {
+			slog.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", sr.status,
+				"dur_ms", time.Since(start).Milliseconds(),
+			)
 		}
 	})
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -16,12 +18,14 @@ import 'state/app_state.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final state = AppState();
+  // Identity/settings come from local storage only — fast. The network sync
+  // (circles, members, keys) runs in the background behind a loading state
+  // so a slow link can never leave the user staring at a blank screen.
   await state.init();
-  // App restart: restore circles, members, keys and live positions.
-  if (state.registered) {
-    await state.load();
-  }
   runApp(LodestarApp(state: state));
+  if (state.registered) {
+    unawaited(state.load());
+  }
 }
 
 class LodestarApp extends StatelessWidget {
