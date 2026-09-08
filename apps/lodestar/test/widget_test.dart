@@ -6,6 +6,7 @@ import 'package:lodestar/core/api/models.dart';
 import 'package:lodestar/core/crypto/crypto_service.dart';
 import 'package:lodestar/core/geo.dart';
 import 'package:lodestar/core/platform/push_tokens.dart';
+import 'package:lodestar/core/pipeline/envelope_pipeline.dart';
 import 'package:lodestar/core/tracking/geofence_engine.dart';
 import 'package:lodestar/state/app_state.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
