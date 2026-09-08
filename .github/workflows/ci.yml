@@ -111,7 +111,9 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
-          bundler-cache: true
+          bundler: default
+      - name: Install fastlane
+        run: gem install fastlane
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -121,7 +123,7 @@ jobs:
         run: flutter pub get
       - name: Fastlane F-Droid lane
         working-directory: ${{ github.workspace }}/fastlane
-        run: bundle exec fastlane f_droid
+        run: bundle install && bundle exec fastlane f_droid
       - name: Upload F-Droid APKs
         uses: actions/upload-artifact@v5
         with:
