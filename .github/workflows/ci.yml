@@ -120,7 +120,7 @@ jobs:
       - name: Dependencies (app)
         run: flutter pub get
       - name: Fastlane F-Droid lane
-        working-directory: ../../fastlane
+        working-directory: ${{ github.workspace }}/fastlane
         run: bundle exec fastlane f_droid
       - name: Upload F-Droid APKs
         uses: actions/upload-artifact@v5
