@@ -103,9 +103,6 @@ jobs:
   f-droid:
     name: F-Droid (metadata + fastlane lane)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/lodestar
     steps:
       - uses: actions/checkout@v5
       - uses: ruby/setup-ruby@v1
@@ -114,7 +111,6 @@ jobs:
           bundler: default
       - name: Install fastlane
         run: gem install fastlane
-      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
