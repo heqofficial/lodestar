@@ -37,6 +37,24 @@ const (
 	maxPastSkewMs   = 180 * 24 * 3600_000 // 180 days
 )
 
+// pushTitle maps an envelope kind to its push-notification title. Every
+// kind in s.pushKinds must have an entry here; the fallback keeps a future
+// kind from sending an empty alert.
+func pushTitle(kind, from string) string {
+	switch kind {
+	case "sos":
+		return "🚨 SOS from " + from
+	case "crash":
+		return "🚨 Possible crash from " + from
+	case "geofence":
+		return "📍 Geofence event"
+	case "checkin":
+		return "✅ Check-in from " + from
+	default:
+		return "Lodestar update"
+	}
+}
+
 func randID(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -341,12 +359,7 @@ func (s *Server) handlePostEnvelope(w http.ResponseWriter, r *http.Request) {
 	// per-device APNs fan-out. The sender's own screen is open, so they are
 	// skipped. Tokens Apple rejects are dropped so they stop failing.
 	if s.pushKinds[req.Kind] && s.push != nil && s.push.Enabled() {
-		title := map[string]string{
-			"sos":      "🚨 SOS from " + dev.Name,
-			"crash":    "🚨 Possible crash from " + dev.Name,
-			"geofence": "📍 Geofence event",
-			"checkin":  "✅ Check-in from " + dev.Name,
-		}[req.Kind]
+		title := pushTitle(req.Kind, dev.Name)
 		go func() {
 			// NB: use context.Background(), not r.Context() — the request
 			// context is cancelled as soon as this handler returns.

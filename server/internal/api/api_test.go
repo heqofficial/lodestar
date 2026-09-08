@@ -1103,3 +1103,59 @@ func TestCORSPreflight(t *testing.T) {
 		}
 	}
 }
+
+// TestWSReadLimitClosesOversizedFrame: the socket must declare an inbound
+// limit; a frame larger than maxEnvelopeSize+1024 is closed by the server
+// instead of being buffered.
+func TestWSReadLimitClosesOversizedFrame(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "C")
+
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws?circle=" + circleID
+
+	conn, httpResp, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + tok}},
+	})
+	if err != nil {
+		t.Fatalf("ws dial: %v (http %d)", err, httpResp.StatusCode)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	time.Sleep(100 * time.Millisecond) // let the subscription land
+
+	// One JSON frame just over the declared limit (64 KiB + 1024 slack).
+	big := make([]byte, (64<<10)+2048)
+	for i := range big {
+		big[i] = 'x'
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := wsjson.Write(ctx, conn, string(big)); err == nil {
+		// Write succeeded locally; the server must now fail the connection.
+		var msg any
+		if rerr := wsjson.Read(ctx, conn, &msg); rerr == nil {
+			t.Error("oversized frame was accepted; connection should have been closed")
+		} else if websocket.CloseStatus(rerr) == -1 {
+			t.Errorf("read error is not a close frame: %v", rerr)
+		}
+	}
+	// If Write failed locally the socket already knew the size was over the
+	// negotiated limit — either way the frame never gets through.
+}
+
+// TestPushTitleCoversKinds: every kind the server pushes must map to a
+// non-empty title, including kinds added later that forget their entry —
+// an empty alert title on a user's lock screen is a bug.
+func TestPushTitleCoversKinds(t *testing.T) {
+	for _, kind := range []string{"sos", "crash", "geofence", "checkin"} {
+		if got := pushTitle(kind, "Alice"); got == "" || got == "Lodestar update" {
+			t.Errorf("pushTitle(%q) = %q, want a dedicated title", kind, got)
+		}
+	}
+	if got := pushTitle("future-kind", "Alice"); got != "Lodestar update" {
+		t.Errorf("pushTitle(future-kind) = %q, want the fallback", got)
+	}
+}

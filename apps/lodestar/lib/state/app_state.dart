@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../core/api/api_client.dart';
 import '../core/api/models.dart';
 import '../core/crypto/crypto_service.dart';
+import '../core/outbox/emergency_outbox.dart';
 import '../core/platform/battery.dart';
 import '../core/platform/push_tokens.dart';
 import '../core/store/local_db.dart';
@@ -122,12 +123,10 @@ class AppState extends ChangeNotifier {
   /// (chat, check-in, SOS, trip, crash) would otherwise double up.
   final Set<String> _sentNonces = {};
 
-  /// Emergency envelopes (SOS/crash) that failed to post while offline.
-  /// Retried on every reconnect/housekeeping tick until delivered or
-  /// stale (>10 min, matching the receivers' staleness window) — an
-  /// emergency that silently vanishes is worse than a late one.
-  final List<({String circleId, String kind, int ts, String nonce, String ciphertext})>
-  _emergencyOutbox = [];
+  /// Persistent queue for SOS/crash envelopes that failed to post while
+  /// offline. Created in [load] once the LocalDb is open; [enqueue] writes
+  /// to disk before any network attempt so a killed app never loses one.
+  EmergencyOutbox? _emergencyOutbox;
 
   void _rememberSent(String nonce) {
     _sentNonces.add(nonce);
@@ -206,6 +205,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     _db = await _dbFuture;
+    _emergencyOutbox = EmergencyOutbox(_db!);
     if (!registered) return;
     booting = true;
     notifyListeners();
@@ -238,6 +238,9 @@ class AppState extends ChangeNotifier {
       }
       _startHousekeeping();
       unawaited(_syncPushToken());
+      // Launch drain: any emergency queued by a previous session (app was
+      // killed while offline) goes out as soon as we're online again.
+      unawaited(_flushEmergencyOutbox());
     } catch (e) {
       lastError = '$e';
     } finally {
@@ -1053,9 +1056,13 @@ class AppState extends ChangeNotifier {
     return outcome;
   }
 
-  /// Seals and posts an emergency envelope (SOS/crash). On network failure
-  /// the sealed envelope is queued for automatic retry. Returns
-  /// `'sent'` / `'queued'` / `'failed'`.
+  /// Seals and posts an emergency envelope (SOS/crash).
+  ///
+  /// Kill-safe ordering: the sealed envelope is persisted to the outbox
+  /// BEFORE the first network attempt, so an app killed mid-flight loses
+  /// nothing; on success the row is removed. On failure it stays queued and
+  /// every reconnect/housekeeping tick retries it. Returns `'sent'` /
+  /// `'queued'` / `'failed'`.
   Future<String> _postEmergency(
     String circleId,
     String kind,
@@ -1071,6 +1078,16 @@ class AppState extends ChangeNotifier {
         data: data,
       );
       _rememberSent(sealed.nonce);
+      // Persist first — the send below is now recoverable from any crash.
+      await _emergencyOutbox?.enqueue(
+        OutboxItem(
+          circleId: circleId,
+          kind: kind,
+          ts: ts,
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+        ),
+      );
       try {
         await api.postEnvelope(
           circleId: circleId,
@@ -1079,74 +1096,26 @@ class AppState extends ChangeNotifier {
           nonce: sealed.nonce,
           ciphertext: sealed.ciphertext,
         );
+        await _emergencyOutbox?.remove(sealed.nonce);
         return 'sent';
       } catch (_) {
-        _enqueueEmergency(
-          circleId,
-          kind,
-          ts,
-          sealed.nonce,
-          sealed.ciphertext,
-        );
-        return 'queued';
+        return 'queued'; // stays on disk; drain will retry
       }
     } catch (_) {
       return 'failed'; // no circle key or crypto failure
     }
   }
 
-  void _enqueueEmergency(
-    String circleId,
-    String kind,
-    int ts,
-    String nonce,
-    String ciphertext,
-  ) {
-    _emergencyOutbox.add((
-      circleId: circleId,
-      kind: kind,
-      ts: ts,
-      nonce: nonce,
-      ciphertext: ciphertext,
-    ));
-    if (_emergencyOutbox.length > 5) {
-      _emergencyOutbox.removeAt(0); // oldest stale items drop first anyway
-    }
-  }
-
-  /// Retries queued emergencies whenever connectivity returns. Items past
-  /// the receivers' staleness window are dropped — a receiver would ignore
-  /// them anyway. Retries reuse the original ts+nonce, so if the first
-  /// attempt actually landed but the response was lost, the server's
-  /// dedup index makes the retry a no-op instead of a duplicate.
+  /// Retries queued emergencies. All policy (staleness, caps, dedup) lives
+  /// in [EmergencyOutbox]; this is just the trigger from reconnects and
+  /// housekeeping ticks.
   Future<void> _flushEmergencyOutbox() async {
-    if (_emergencyOutbox.isEmpty) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final kept = <({
-      String circleId,
-      String kind,
-      int ts,
-      String nonce,
-      String ciphertext,
-    })>[];
-    for (final item in _emergencyOutbox) {
-      if (now - item.ts > 10 * 60 * 1000) continue;
-      try {
-        await api.postEnvelope(
-          circleId: item.circleId,
-          kind: item.kind,
-          ts: item.ts,
-          nonce: item.nonce,
-          ciphertext: item.ciphertext,
-        );
-      } catch (_) {
-        kept.add(item);
-      }
-    }
-    if (kept.length != _emergencyOutbox.length) {
-      _emergencyOutbox
-        ..clear()
-        ..addAll(kept);
+    final outbox = _emergencyOutbox;
+    if (outbox == null) return; // db not open yet
+    try {
+      await outbox.drain(api);
+    } catch (_) {
+      // Drain is best-effort: the next reconnect/housekeeping tick retries.
     }
   }
 

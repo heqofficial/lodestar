@@ -10,7 +10,7 @@ void main() {
   group('LocalDb envelope cache', () {
     test('newest window is returned, ascending reverses in chronological order',
         () async {
-      final db = await LocalDb.open();
+      final db = await LocalDb.open(name: 'cache-test.db');
       // Unique circle id per run so rows never leak between test runs.
       final circle = 'c${DateTime.now().millisecondsSinceEpoch}';
       final base = DateTime.now().millisecondsSinceEpoch;

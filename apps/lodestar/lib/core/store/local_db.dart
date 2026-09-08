@@ -2,6 +2,31 @@ import 'package:sqflite/sqflite.dart';
 
 import '../api/models.dart';
 
+/// One queued emergency envelope: already sealed, waiting for the network.
+/// [nonce] doubles as the id — retries reuse it so the server's dedup index
+/// turns a retry-after-lost-response into a no-op instead of a duplicate.
+class OutboxItem {
+  const OutboxItem({
+    required this.circleId,
+    required this.kind,
+    required this.ts,
+    required this.nonce,
+    required this.ciphertext,
+    this.attempts = 0,
+  });
+
+  final String circleId;
+  final String kind;
+  final int ts;
+  final String nonce;
+  final String ciphertext;
+  final int attempts;
+
+  OutboxItem withAttempts(int n) =>
+      OutboxItem(circleId: circleId, kind: kind, ts: ts, nonce: nonce,
+          ciphertext: ciphertext, attempts: n);
+}
+
 /// On-device cache of relayed envelopes (ciphertext only — we never persist
 /// plaintext locations), plus circle membership metadata for offline use.
 class LocalDb {
@@ -16,13 +41,16 @@ class LocalDb {
   static const _retentionDays = 90;
   static const _maxPerCircle = 20000;
 
-  static Future<LocalDb> open() async {
+  /// [name] exists for tests: two test isolates sharing one file hit
+  /// SQLITE_BUSY. Production always uses the default.
+  static Future<LocalDb> open({String name = 'lodestar.db'}) async {
     if (_instance != null) return _instance!;
     final dir = await getDatabasesPath();
     final db = await openDatabase(
-      '$dir/lodestar.db',
-      version: 1,
+      '$dir/$name',
+      version: 2,
       onCreate: (db, _) async {
+        await _createOutbox(db);
         await db.execute('''
           CREATE TABLE envelopes (
             id TEXT PRIMARY KEY,
@@ -54,14 +82,72 @@ class LocalDb {
             avatar_color TEXT NOT NULL,
             ed25519_pub TEXT NOT NULL,
             x25519_pub TEXT NOT NULL,
-            sharing_enabled INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (circle_id, device_id)
-          )''');
+            sharing_enabled INTEGER NOT NULL DEFAULT 1,          PRIMARY KEY (circle_id, device_id)
+        )''');
+      },
+      onUpgrade: (db, oldVersion, _) async {
+        // v2: emergency outbox — SOS/crash envelopes must survive an app kill.
+        if (oldVersion < 2) await _createOutbox(db);
       },
     );
     _instance = LocalDb._(db);
     await _instance!.prune();
     return _instance!;
+  }
+
+  static Future<void> _createOutbox(Database db) async {
+    await db.execute('''
+      CREATE TABLE outbox (
+        nonce TEXT PRIMARY KEY,
+        circle_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        ciphertext TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      )''');
+  }
+
+  // -----------------------------------------------------------------------
+  // Emergency outbox storage (policy lives in EmergencyOutbox).
+  // -----------------------------------------------------------------------
+
+  Future<void> putOutboxItem(OutboxItem item) async {
+    await _db.insert(
+      'outbox',
+      {
+        'nonce': item.nonce,
+        'circle_id': item.circleId,
+        'kind': item.kind,
+        'ts': item.ts,
+        'ciphertext': item.ciphertext,
+        'attempts': item.attempts,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// All queued items, oldest first. An outbox is tiny (≤ 5) so a full scan
+  /// is always the right query.
+  Future<List<OutboxItem>> outboxItems() async {
+    final rows = await _db.query('outbox', orderBy: 'created_at ASC, ts ASC');
+    return rows
+        .map(
+          (r) => OutboxItem(
+            circleId: r['circle_id'] as String,
+            kind: r['kind'] as String,
+            ts: r['ts'] as int,
+            nonce: r['nonce'] as String,
+            ciphertext: r['ciphertext'] as String,
+            attempts: r['attempts'] as int,
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> deleteOutboxItem(String nonce) async {
+    await _db.delete('outbox', where: 'nonce = ?', whereArgs: [nonce]);
   }
 
   /// Bounds the cache: drops envelopes older than 90 days and, per circle,

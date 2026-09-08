@@ -142,6 +142,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// Explicit inbound cap, matching the REST envelope limit. Without it,
+	// coder/websocket applies its own default (32 KiB) silently; stating it
+	// here keeps the two limits in lockstep and closes the socket on any
+	// oversized frame instead of buffering attacker-controlled bytes.
+	c.SetReadLimit(maxEnvelopeSize + 1024)
 	conn := s.hub.Subscribe(circleID, dev.ID, c)
 	if conn == nil {
 		_ = c.Close(websocket.StatusPolicyViolation, "too many connections")
