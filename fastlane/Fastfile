@@ -6,7 +6,9 @@ platform :android do
     # metadata claims against a real build. F-Droid rebuilds from source with
     # its own keys; we do not provision a production signing key here.
     # flutter pub get / build must run inside the Flutter project dir.
-    app_dir = File.join(FastlaneCore.project_directory, "../apps/lodestar")
+    # Fastlane runs this lane with CWD = the fastlane/ directory, so the app
+    # lives one level up under apps/lodestar.
+    app_dir = File.expand_path("../apps/lodestar", Dir.pwd)
     Dir.chdir(app_dir) do
       sh("flutter", "pub", "get")
       sh("flutter", "build", "apk", "--release", "--split-per-abi")
@@ -24,8 +26,9 @@ platform :android do
 
     # APK outputs are relative to the Flutter project root (we built inside
     # app_dir above, so this is already the right CWD for the cp paths).
+    # Output metadata goes under fastlane/metadata/android/ next to this Fastfile.
     apk_dir = "build/app/outputs/flutter-apk"
-    output = File.join(FastlaneCore.project_directory, "metadata/android/#{version_name}")
+    output = File.expand_path("metadata/android/#{version_name}", Dir.pwd)
     sh("mkdir", "-p", output)
     sh("cp", "#{apk_dir}/app-arm64-v8a-release.apk",
        "#{output}/dev.lodestar.lodestar_#{version_name}.apk")
