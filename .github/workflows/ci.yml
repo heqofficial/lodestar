@@ -117,11 +117,10 @@ jobs:
           channel: stable
           flutter-version: "3.47.x"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Dependencies
-        working-directory: ..
+      - name: Dependencies (app)
         run: flutter pub get
       - name: Fastlane F-Droid lane
-        working-directory: ../fastlane
+        working-directory: ../../fastlane
         run: bundle exec fastlane f_droid
       - name: Upload F-Droid APKs
         uses: actions/upload-artifact@v5

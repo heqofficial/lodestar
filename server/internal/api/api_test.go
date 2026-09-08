@@ -474,19 +474,20 @@ func TestLocationKindThrottle(t *testing.T) {
 	s, _ := newTestServer(t)
 	_, tok := register(t, s, "Spammer")
 	circleID := createCircle(t, s, tok, "C")
-	limited := false
-	for i := 0; i < 40; i++ {
+	rejected := 0
+	const posts = 50 // burst is 30; even with refill at the slowest realistic pace
+	// (a few ms per request) the bucket empties well inside 50 posts.
+	for i := 0; i < posts; i++ {
 		resp, _ := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
 			"kind": "location", "ts": time.Now().UnixMilli(),
 			"nonce": fmt.Sprintf("n-%d", i), "ciphertext": "c2lnaHQ=",
 		})
 		if resp.StatusCode == http.StatusTooManyRequests {
-			limited = true
-			break
+			rejected++
 		}
 	}
-	if !limited {
-		t.Error("expected location kind throttle to kick in")
+	if rejected == 0 {
+		t.Error("expected location kind throttle to kick in (0/50 rejected)")
 	}
 }
 
