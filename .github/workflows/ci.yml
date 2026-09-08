@@ -117,7 +117,6 @@ jobs:
           flutter-version: "3.47.x"
       - uses: gradle/actions/setup-gradle@v4
       - name: Fastlane F-Droid lane
-        working-directory: ${{ github.workspace }}/fastlane
         run: |
           cd ${{ github.workspace }}/apps/lodestar
           flutter pub get
