@@ -10,6 +10,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 abstract class KeyStore {
   Future<String?> read(String key);
   Future<void> write(String key, String value);
+
+  /// Removes every key under our 'ls_' namespace. Used by sign-out.
+  Future<void> wipe();
 }
 
 /// KeyStore backed by the OS keystore/keychain.
@@ -22,6 +25,9 @@ class SecureKeyStore implements KeyStore {
   @override
   Future<void> write(String key, String value) =>
       _storage.write(key: key, value: value);
+
+  @override
+  Future<void> wipe() => _storage.deleteAll();
 }
 
 /// End-to-end encryption for everything a member shares.
@@ -130,6 +136,18 @@ class CryptoService {
         publicKey: SimplePublicKey(publicKey, type: KeyPairType.ed25519),
       ),
     );
+  }
+
+  /// Destroys every stored key (identity + all circle keys). Called on
+  /// sign-out AFTER the server has revoked the device — afterwards this
+  /// install is cryptographically fresh.
+  Future<void> wipe() async {
+    _initialized = false;
+    _edPair = null;
+    _xPair = null;
+    _edPubBytes = null;
+    _xPubBytes = null;
+    await _store.wipe();
   }
 
   // ---------------------------------------------------------------------

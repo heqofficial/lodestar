@@ -69,6 +69,10 @@ class ApiClient {
   Future<void> setPushToken(String apnsToken) =>
       _send('PUT', '/api/v1/devices/push', body: {'apns_token': apnsToken});
 
+  /// Revokes this device server-side: token, memberships, key blobs, live
+  /// sockets. After a 204 the token is dead — sign out locally and wipe.
+  Future<void> deleteSelf() => _send('DELETE', '/api/v1/devices/self');
+
   static Future<({Device device, String token})> registerDevice({
     required String baseUrl,
     required String name,

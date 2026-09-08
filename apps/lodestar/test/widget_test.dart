@@ -21,6 +21,9 @@ class _FakeKeyStore implements KeyStore {
   Future<void> write(String key, String value) async {
     _store[key] = value;
   }
+
+  @override
+  Future<void> wipe() async => _store.clear();
 }
 
 CryptoService newTestCrypto() => CryptoService(_FakeKeyStore());

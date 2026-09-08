@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/devices", s.handleRegisterDevice)
 	mux.HandleFunc("PUT /api/v1/devices/push", s.auth(s.handleSetPushToken))
+	mux.HandleFunc("DELETE /api/v1/devices/self", s.auth(s.handleDeleteSelf))
 	mux.HandleFunc("GET /api/v1/me", s.auth(s.handleMe))
 	mux.HandleFunc("GET /api/v1/circles", s.auth(s.handleListCircles))
 	mux.HandleFunc("POST /api/v1/circles", s.auth(s.handleCreateCircle))

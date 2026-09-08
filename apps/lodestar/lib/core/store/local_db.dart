@@ -150,6 +150,14 @@ class LocalDb {
     await _db.delete('outbox', where: 'nonce = ?', whereArgs: [nonce]);
   }
 
+  /// Sign-out: drops the whole local envelope cache (ciphertext only, but
+  /// it is still other people's data). Outbox rows go too — the server has
+  /// already revoked this device, so queued emergencies are undeliverable.
+  Future<void> wipeEnvelopes() async {
+    await _db.delete('envelopes');
+    await _db.delete('outbox');
+  }
+
   /// Bounds the cache: drops envelopes older than 90 days and, per circle,
   /// everything beyond the newest 20k. Cheap at family scale; run at open
   /// and daily from housekeeping.

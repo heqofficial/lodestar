@@ -1159,3 +1159,70 @@ func TestPushTitleCoversKinds(t *testing.T) {
 		t.Errorf("pushTitle(future-kind) = %q, want the fallback", got)
 	}
 }
+
+// TestDeleteSelfRevokesEverything: DELETE /api/v1/devices/self kills the
+// token, the memberships, the key blobs, and the live sockets. Other
+// members keep working and the circle survives an owner's departure.
+func TestDeleteSelfRevokesEverything(t *testing.T) {
+	s, st := newTestServer(t)
+	aliceID, aliceTok := register(t, s, "Alice")
+	_, bobTok := register(t, s, "Bob")
+	circleID := createCircle(t, s, aliceTok, "C")
+	resp, out := doJSON(t, s, "POST", "/api/v1/circles/join", bobTok, map[string]any{"code": mustInvite(t, s, aliceTok, circleID)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob join: %d (%v)", resp.StatusCode, out)
+	}
+	if err := st.PutKeyBlob(circleID, aliceID, "blob-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Live socket before deletion: must be kicked.
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/api/v1/ws?circle=" + circleID
+	conn, httpResp, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + bobTok}},
+	})
+	_ = conn // bob's socket stays open; alice's revocation must not touch it
+	if err != nil {
+		t.Fatalf("ws dial: %v (http %d)", err, httpResp.StatusCode)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+	time.Sleep(100 * time.Millisecond)
+
+	resp, _ = doJSON(t, s, "DELETE", "/api/v1/devices/self", aliceTok, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete self: %d", resp.StatusCode)
+	}
+
+	// Token is dead.
+	resp, _ = doJSON(t, s, "GET", "/api/v1/me", aliceTok, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me after revoke: %d, want 401", resp.StatusCode)
+	}
+	// Key blob gone.
+	if _, err := st.KeyBlob(circleID, aliceID); err == nil {
+		t.Error("key blob survived device deletion")
+	}
+	// Bob keeps working.
+	resp, _ = doJSON(t, s, "GET", "/api/v1/me", bobTok, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("bob me after alice revoke: %d, want 200", resp.StatusCode)
+	}
+	// Circle ownership transferred to Bob.
+	detail, out := doJSON(t, s, "GET", "/api/v1/circles/"+circleID, bobTok, nil)
+	if detail.StatusCode != http.StatusOK {
+		t.Fatalf("circle detail: %d (%v)", detail.StatusCode, out)
+	}
+	if out["owner_device_id"] == aliceID {
+		t.Error("circle still owned by the deleted device")
+	}
+	// Bob's socket must NOT have been kicked by alice's deletion.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	postEnvelope(t, s, bobTok, circleID, "checkin")
+	var msg map[string]any
+	if err := wsjson.Read(ctx, conn, &msg); err != nil {
+		t.Errorf("bob socket died after alice's self-delete: %v", err)
+	}
+}

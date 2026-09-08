@@ -203,6 +203,53 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Signs out on this phone: revokes the device server-side (token dies,
+  /// live sockets are kicked, memberships and key blobs are deleted), then
+  /// wipes every local trace — keystore keys, prefs, and the envelope cache.
+  ///
+  /// Server-first ordering: if the revoke fails (offline), nothing local is
+  /// wiped — a sign-out that leaves a live token on a stolen phone is worse
+  /// than no sign-out. Returns true on success.
+  Future<bool> signOut() async {
+    if (!registered) return false;
+    try {
+      await api.deleteSelf();
+    } catch (_) {
+      lastError = 'Sign-out needs a connection (server revoke failed).';
+      notifyListeners();
+      return false;
+    }
+    _disposed = true; // stop WS loop & timers before tearing state down
+    _wsSub?.cancel();
+    _housekeepingTimer?.cancel();
+    _accelSub?.cancel();
+    _tracker?.stop();
+    _trips?.finish();
+    await crypto.wipe();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    try {
+      await (await _dbFuture).wipeEnvelopes();
+    } catch (_) {}
+    // Reset volatile state; the UI returns to onboarding.
+    circles.clear();
+    membersByCircle.clear();
+    positionsByDevice.clear();
+    places.clear();
+    events.clear();
+    chatByCircle.clear();
+    serverUrl = '';
+    deviceId = '';
+    deviceName = '';
+    token = '';
+    registered = false;
+    activeCircleId = null;
+    hasCircleKey = false;
+    _api = null;
+    notifyListeners();
+    return true;
+  }
+
   Future<void> load() async {
     _db = await _dbFuture;
     _emergencyOutbox = EmergencyOutbox(_db!);

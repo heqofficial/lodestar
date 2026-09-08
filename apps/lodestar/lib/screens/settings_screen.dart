@@ -154,6 +154,14 @@ class SettingsScreen extends StatelessWidget {
                   ),
                   onTap: () => _showPrivacy(context),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.logout),
+                  title: const Text('Sign out on this phone'),
+                  subtitle: const Text(
+                    'Revokes this device on the server and wipes all local data',
+                  ),
+                  onTap: () => _confirmSignOut(context, state),
+                ),
               ],
             ),
           ),
@@ -163,6 +171,44 @@ class SettingsScreen extends StatelessWidget {
             'Lodestar · open source (AGPL-3.0) · no tracking · no data selling\nYour family\u2019s guiding star ⭐',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmSignOut(BuildContext context, AppState state) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign out on this phone?'),
+        content: const Text(
+          'This revokes the device on the server and deletes all keys and '
+          'cached data on this phone. To rejoin a circle you will need a '
+          'fresh invite code.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final ok = await state.signOut();
+              if (context.mounted && !ok) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Sign-out failed — a connection is required to revoke '
+                      'the device first.',
+                    ),
+                  ),
+                );
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Sign out'),
           ),
         ],
       ),

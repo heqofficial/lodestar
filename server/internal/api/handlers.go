@@ -553,6 +553,29 @@ func (s *Server) handleSetSharing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": *req.Enabled})
 }
 
+// handleDeleteSelf revokes THIS device: deletes its row, memberships, and
+// key blobs, then kicks its live sockets. The bearer token dies with the
+// row, so the client's next request gets 401. This is the logout path.
+func (s *Server) handleDeleteSelf(w http.ResponseWriter, r *http.Request) {
+	dev := deviceFrom(r.Context())
+	// Snapshot memberships first: after DeleteDevice they are gone, but the
+	// hub still needs to kick this device from every circle it was in.
+	circles, err := s.store.CirclesForDevice(dev.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not list circles")
+		return
+	}
+	if err := s.store.DeleteDevice(dev.ID); err != nil {
+		slog.Error("delete device", "err", err, "device", dev.ID)
+		writeErr(w, http.StatusInternalServerError, "could not delete device")
+		return
+	}
+	for _, c := range circles {
+		s.hub.Kick(c.ID, dev.ID)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	circleID := r.PathValue("id")
 	did := r.PathValue("did")

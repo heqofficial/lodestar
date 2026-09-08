@@ -80,6 +80,78 @@ func (s *Store) DeviceByTokenHash(hash string) (*Device, error) {
 	return d, nil
 }
 
+// DeleteDevice removes the device row and, in one transaction, every
+// membership, key blob, and push token attached to it. Used by
+// DELETE /api/v1/devices/self: the bearer token's hash row disappears, so
+// every token for this install stops working immediately.
+func (s *Store) DeleteDevice(deviceID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete device: begin: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	// Leave circles cleanly: an owner's departure hands the role to the
+	// longest-standing member so no circle is orphaned.
+	rows, err := tx.Query(`SELECT circle_id, role FROM circle_members WHERE device_id = ?`, deviceID)
+	if err != nil {
+		return fmt.Errorf("delete device: memberships: %w", err)
+	}
+	var owned []string
+	for rows.Next() {
+		var circleID, role string
+		if err := rows.Scan(&circleID, &role); err != nil {
+			rows.Close()
+			return fmt.Errorf("delete device: memberships scan: %w", err)
+		}
+		if role == "owner" {
+			owned = append(owned, circleID)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("delete device: memberships: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM devices WHERE id = ?`, deviceID); err != nil {
+		return fmt.Errorf("delete device: row: %w", err)
+	}
+	// FKs keep referential integrity elsewhere, but memberships/key blobs
+	// are deleted explicitly so ownership transfer sees the post-leave state.
+	if _, err := tx.Exec(`DELETE FROM circle_members WHERE device_id = ?`, deviceID); err != nil {
+		return fmt.Errorf("delete device: memberships: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM key_blobs WHERE device_id = ?`, deviceID); err != nil {
+		return fmt.Errorf("delete device: key blobs: %w", err)
+	}
+	for _, circleID := range owned {
+		next, err := oldestMemberTx(tx, circleID)
+		if err != nil {
+			return fmt.Errorf("delete device: successor: %w", err)
+		}
+		if next != "" {
+			if _, err := tx.Exec(`UPDATE circle_members SET role = 'owner' WHERE circle_id = ? AND device_id = ?`, circleID, next); err != nil {
+				return fmt.Errorf("delete device: promote: %w", err)
+			}
+			if _, err := tx.Exec(`UPDATE circles SET owner_device_id = ? WHERE id = ?`, next, circleID); err != nil {
+				return fmt.Errorf("delete device: transfer: %w", err)
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// oldestMemberTx mirrors Store.OldestMember for an open transaction.
+func oldestMemberTx(tx *sql.Tx, circleID string) (string, error) {
+	var id string
+	err := tx.QueryRow(`SELECT device_id FROM circle_members WHERE circle_id = ?
+		ORDER BY joined_at ASC LIMIT 1`, circleID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 // PruneDevices deletes abandoned device rows: registrations with no
 // circle memberships at all, created before cutoffMS. Every app reinstall
 // registers a fresh device, so without this the table grows forever with
