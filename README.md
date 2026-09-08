@@ -37,7 +37,7 @@ Life360 has been caught selling precise family location data to a dozen data bro
 - Self-hosted push via [ntfy](https://ntfy.sh) (optional; crash + SOS alert by default)
 - Minimal web dashboard (server status, no locations)
 
-**Roadmap:** Home Assistant add-on, wearables, multi-language, iOS APNs push in-app, public instance, pet circles.
+**Roadmap:** Home Assistant add-on, wearables, multi-language, public instance, pet circles.
 
 ## Repository layout
 
@@ -103,7 +103,7 @@ Read the full [threat model](docs/threat-model.md) and [architecture](docs/archi
 | Server (Raspberry Pi at home) | $0/mo (electricity aside) |
 | Server (Oracle free ARM VM or Google e2-micro) | $0/mo |
 | Server (Hetzner CX22 VPS — best paid value) | ~$4/mo |
-| Android distribution (F-Droid) | $0 |
+| Android distribution (F-Droid) | $0 (metadata + fastlane lane in `fastlane/`; first submission is a manual F-Droid repo PR) |
 | iOS distribution (TestFlight/App Store) | $99/yr Apple Developer (unavoidable for normal iOS installs) |
 | Push notifications (self-hosted ntfy) | $0 |
 

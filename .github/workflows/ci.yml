@@ -78,6 +78,60 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  ios:
+    name: iOS (archive compiles, no codesign)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/lodestar
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.47.x"
+      - name: Dependencies
+        run: flutter pub get
+      # `flutter build ios --no-codesign` compiles the iOS archive on Linux
+      # without a simulator or signing identity — it validates iOS plugin
+      # linkage and the Dart build path for iOS. No simulator needed.
+      - name: Build iOS archive (no codesign)
+        run: flutter build ios --release --no-codesign
+      - name: Test
+        run: flutter test
+
+  f-droid:
+    name: F-Droid (metadata + fastlane lane)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/lodestar
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-ruby@v3
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.47.x"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Dependencies
+        working-directory: ..
+        run: flutter pub get
+      - name: Fastlane F-Droid lane
+        working-directory: ../fastlane
+        run: bundle exec fastlane f_droid
+      - name: Upload F-Droid APKs
+        uses: actions/upload-artifact@v5
+        with:
+          name: lodestar-fdroid
+          path: |
+            fastlane/metadata/android/*/dev.lodestar.lodestar_*.apk
+          if-no-files-found: error
+          retention-days: 30
+
   docker:
     name: Docker (server image build)
     runs-on: ubuntu-latest

@@ -1,0 +1,31 @@
+default_platform(:android)
+
+platform :android do
+  lane :f_droid do
+    # Reproduce exactly what CI builds, locally, so a reviewer can verify the
+    # metadata claims against a real build. F-Droid rebuilds from source with
+    # its own keys; we do not provision a production signing key here.
+    sh("flutter", "pub", "get")
+    sh("flutter", "build", "apk", "--release", "--split-per-abi")
+
+    # Read versionName straight from pubspec.yaml (no extra plugin). The
+    # flutter build itself takes versionName from pubspec, so this is the
+    # same value F-Droid will see.
+    pubspec_path = File.join(FastlaneCore.project_directory, "../pubspec.yaml")
+    pubspec = File.read(pubspec_path)
+    version_line = pubspec.each_line.find { |l| l.start_with?("version:") }
+    UI.user_error!("Could not read versionName from #{pubspec_path}") unless version_line
+    version_name = version_line.split.first(2).last.delete_prefix("+").split("+").first
+    UI.user_error!("Malformed version in #{pubspec_path}") unless version_name
+
+    apk_dir = "build/app/outputs/flutter-apk"
+    output = "fastlane/metadata/android/#{version_name}"
+    sh("mkdir", "-p", output)
+    sh("cp", "#{apk_dir}/app-arm64-v8a-release.apk",
+       "#{output}/dev.lodestar.lodestar_#{version_name}.apk")
+    sh("cp", "#{apk_dir}/app-armeabi-v7a-release.apk",
+       "#{output}/dev.lodestar.lodestar_#{version_name}_armeabi-v7a.apk")
+    sh("cp", "#{apk_dir}/app-x86_64-release.apk",
+       "#{output}/dev.lodestar.lodestar_#{version_name}_x86_64.apk")
+  end
+end

@@ -33,3 +33,8 @@ Thumbs.db
 .env
 .env.*
 /server/e2e/lodestard-e2e.exe
+
+# --- Fastlane ---
+fastlane/Report.xml
+fastlane/test_output/
+fastlane/.env*

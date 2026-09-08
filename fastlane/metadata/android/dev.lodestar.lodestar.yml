@@ -1,0 +1,69 @@
+Categories:
+  - Navigation
+  - Location
+WebSite: https://github.com/heqofficial/lodestar
+SourceCode: https://github.com/heqofficial/lodestar
+IssueTracker: https://github.com/heqofficial/lodestar/issues
+Changelog: https://github.com/heqofficial/lodestar/releases
+Description: >
+  Lodestar is a free, open-source, end-to-end-encrypted family location app —
+  Life360's usefulness without the surveillance business model.
+
+  Your family's guiding star. Locations are end-to-end encrypted (X25519 +
+  ChaCha20-Poly1305); the server stores only ciphertext and can never see
+  where anyone is. Self-hosted — runs on a Raspberry Pi, an old laptop, or a
+  free Oracle ARM VM. Android + iOS, one Flutter codebase, Go server.
+
+  Features: circles with invite codes, live family map (OpenStreetMap, no paid
+  API keys), adaptive motion-aware background tracking, on-device geofencing,
+  E2E-encrypted chat, check-ins, one-tap SOS, driving reports (distance,
+  duration, top/avg speed, speeding + hard-braking episodes), crash alerting
+  (on-device impact detection), per-member sharing controls, and optional
+  self-hosted push via ntfy. No Firebase, no Google Play Services, no analytics,
+  no trackers. Consent-first — every member controls what they share, when, and
+  with whom.
+
+  This is a FLOSS app built with Flutter; the F-Droid build uses the same
+  source as the upstream release APKs but is signed with F-Droid's own keys.
+  Lodestar ships split per-ABI APKs; the F-Droid repo carries the arm64-v8a
+  build as the primary APK.
+Summary: Free, open-source, E2E-encrypted family location tracker
+License: AGPL-3.0-only
+AuthorName: heqofficial
+AuthorEmail: ''
+MaintainerNotes: >
+  FLOSS, AGPL-3.0, no proprietary deps, no Google Play Services for messaging,
+  self-hostable — good fit for the main repo.
+
+  Build is reproducible in the sense that F-Droid rebuilds from source with its
+  own keys; the upstream release APKs are debug-signed (fine for family
+  sideloading) and are not uploaded as Binaries.
+
+  The repo ships split per-ABI APKs; the F-Droid primary APK is the arm64-v8a
+  build. First submission is a manual PR to the F-Droid repo adding this
+  metadata file + the source tag; the `fastlane f_droid` lane reproduces the
+  local build for verification.
+
+  Push notifications: self-hosted ntfy (default) is FLOSS and fine; APNs for
+  iOS is configured but APNs is a proprietary Apple service, so if you want the
+  app in F-Droid with APNs enabled you must set AntiFeatures: [Ads] is NOT
+  appropriate here — APNs is used only for wake-up alerts and never sends
+  location/plaintext to Apple. Confirm the exact AntiFeatures classification
+  with the F-Droid team before merging; the app does not display ads.
+
+  ntfy is optional; the app works fully without any push provider.
+RepoType: git
+Repo: https://github.com/heqofficial/lodestar
+CurrentVersion: 0.12.0
+CurrentVersionCode: 1
+Builds:
+  - versionName: '0.12.0'
+    versionCode: 1
+    commit: 'e06337714a6f23d1fc4fa0806c03ab0287268df5'
+    subdir: apps/lodestar
+    gradle:
+      - --parallel
+      - --no-daemon
+    target: flutter
+    androidupdate: true
+    timeout: 360
