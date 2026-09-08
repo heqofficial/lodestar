@@ -114,16 +114,20 @@ jobs:
           bundler: default
       - name: Install fastlane
         run: gem install fastlane
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: "3.47.x"
       - uses: gradle/actions/setup-gradle@v4
-      - name: Dependencies (app)
-        run: flutter pub get
       - name: Fastlane F-Droid lane
         working-directory: ${{ github.workspace }}/fastlane
-        run: bundle install && bundle exec fastlane f_droid
+        run: |
+          cd ${{ github.workspace }}/apps/lodestar
+          flutter pub get
+          cd ${{ github.workspace }}/fastlane
+          bundle install --quiet
+          bundle exec fastlane f_droid
       - name: Upload F-Droid APKs
         uses: actions/upload-artifact@v5
         with:
