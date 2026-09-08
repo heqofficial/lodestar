@@ -586,11 +586,11 @@ func (s *Server) mustBeMember(w http.ResponseWriter, circleID, deviceID string) 
 }
 
 func (s *Server) ntfyEnabled() bool {
-	return s.push != nil && s.push.Enabled()
+	return s.push != nil && s.push.NtfyEnabled()
 }
 
 func (s *Server) apnsEnabled() bool {
-	return s.push != nil && s.push.Enabled()
+	return s.push != nil && s.push.APNsEnabled()
 }
 
 func firstNonEmpty(vals ...string) string {

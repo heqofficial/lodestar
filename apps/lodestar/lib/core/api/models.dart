@@ -119,21 +119,6 @@ class Envelope {
   );
 }
 
-/// Decrypted, verified payload of an envelope.
-class OpenEnvelope {
-  final String sender;
-  final String kind;
-  final int ts;
-  final Map<String, dynamic> data;
-
-  OpenEnvelope({
-    required this.sender,
-    required this.kind,
-    required this.ts,
-    required this.data,
-  });
-}
-
 /// A decrypted location payload.
 class Position {
   final double lat;

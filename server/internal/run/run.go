@@ -92,8 +92,14 @@ func Server(ctx context.Context, args []string) error {
 	}
 
 	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           api.New(st, push.NewMulti(senders...), *adminToken, strings.Split(*pushKinds, ",")).Handler(),
+		Addr:    *addr,
+		Handler: api.New(st, push.NewMulti(senders...), *adminToken, strings.Split(*pushKinds, ",")).Handler(),
+		// ReadTimeout bounds the whole request phase (headers + body): a
+		// hostile client that trickles a request body would otherwise hold
+		// a connection (and goroutine) open indefinitely. WebSocket
+		// connections are unaffected — the upgrade happens well within the
+		// window, and after the hijack the socket manages its own deadlines.
+		ReadTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -136,6 +142,14 @@ func runPrune(st *store.Store, days int) {
 		slog.Warn("prune invites", "err", err)
 	} else if nInvites > 0 {
 		slog.Info("pruned invites", "n", nInvites)
+	}
+	// Abandoned registrations (each app reinstall creates a fresh device
+	// row) have no memberships and can never be used again — drop them
+	// after 6 months so the devices table stays bounded.
+	if nDevices, err := st.PruneDevices(time.Now().AddDate(0, 0, -180).UnixMilli()); err != nil {
+		slog.Warn("prune devices", "err", err)
+	} else if nDevices > 0 {
+		slog.Info("pruned devices", "n", nDevices)
 	}
 }
 

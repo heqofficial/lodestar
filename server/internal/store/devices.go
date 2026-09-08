@@ -80,6 +80,21 @@ func (s *Store) DeviceByTokenHash(hash string) (*Device, error) {
 	return d, nil
 }
 
+// PruneDevices deletes abandoned device rows: registrations with no
+// circle memberships at all, created before cutoffMS. Every app reinstall
+// registers a fresh device, so without this the table grows forever with
+// rows that can never be used again (their tokens are lost). Devices that
+// belong to any circle are always kept.
+func (s *Store) PruneDevices(cutoffMS int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM devices
+		WHERE created_at < ? AND id NOT IN (SELECT device_id FROM circle_members)`, cutoffMS)
+	if err != nil {
+		return 0, fmt.Errorf("prune devices: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // DeviceByID looks up a device by ID.
 func (s *Store) DeviceByID(id string) (*Device, error) {
 	d := &Device{}

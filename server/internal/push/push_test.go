@@ -116,6 +116,26 @@ func TestMultiDisabled(t *testing.T) {
 	if m.Enabled() {
 		t.Fatal("empty multi should be disabled")
 	}
+	if m.NtfyEnabled() || m.APNsEnabled() {
+		t.Fatal("empty multi reports providers as enabled")
+	}
+}
+
+// TestMultiPerProviderFlags: the admin stats must distinguish which
+// providers are actually configured — reporting APNs as live just because
+// ntfy is configured (or vice versa) is a lie on the dashboard.
+func TestMultiPerProviderFlags(t *testing.T) {
+	ntfy := NewMulti(NewNtfy("http://localhost", ""))
+	if !ntfy.Enabled() || !ntfy.NtfyEnabled() || ntfy.APNsEnabled() {
+		t.Errorf("ntfy-only multi flags: enabled=%v ntfy=%v apns=%v",
+			ntfy.Enabled(), ntfy.NtfyEnabled(), ntfy.APNsEnabled())
+	}
+	t.Run("nil entries are skipped", func(t *testing.T) {
+		m := NewMulti(nil, nil)
+		if m.Enabled() {
+			t.Fatal("nil-only multi should be disabled")
+		}
+	})
 }
 
 func TestNtfySkipsPerDeviceRequests(t *testing.T) {

@@ -1,7 +1,7 @@
 name: lodestar
 description: "Lodestar — your family's guiding star. Free, open-source, end-to-end-encrypted family location sharing."
 publish_to: "none"
-version: 0.10.0+1
+version: 0.12.0+1
 
 environment:
   sdk: ^3.9.0

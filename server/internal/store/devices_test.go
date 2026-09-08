@@ -85,6 +85,41 @@ func TestAPNsTargets(t *testing.T) {
 	}
 }
 
+func TestPruneDevices(t *testing.T) {
+	s := openTestStore(t)
+	old := nowMS() - 200*24*3600_000 // ~200 days ago
+	recent := nowMS()
+	devices := []Device{
+		{ID: "d1", Name: "abandoned", Ed25519Pub: "e", X25519Pub: "x", TokenHash: "h1", CreatedAt: old},
+		{ID: "d2", Name: "member", Ed25519Pub: "e", X25519Pub: "x", TokenHash: "h2", CreatedAt: old},
+		{ID: "d3", Name: "fresh", Ed25519Pub: "e", X25519Pub: "x", TokenHash: "h3", CreatedAt: recent},
+	}
+	for _, d := range devices {
+		if err := s.CreateDevice(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateCircle(Circle{ID: "c1", Name: "C", Color: "#fff", OwnerDeviceID: "d2", InviteCode: "inv1", CreatedAt: nowMS()}, ""); err != nil {
+		t.Fatal(err)
+	}
+	// d2 has a membership; d1 and d3 have none.
+	n, err := s.PruneDevices(nowMS() - 180*24*3600_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d devices, want 1 (only the old membership-less d1)", n)
+	}
+	if _, err := s.DeviceByID("d1"); err == nil {
+		t.Error("abandoned device d1 survived the prune")
+	}
+	for _, keep := range []string{"d2", "d3"} {
+		if _, err := s.DeviceByID(keep); err != nil {
+			t.Errorf("device %s should be kept: %v", keep, err)
+		}
+	}
+}
+
 // TestMigrationAddsAPNsColumn proves a database created before the apns_token
 // column existed opens cleanly and gains the column.
 func TestMigrationAddsAPNsColumn(t *testing.T) {

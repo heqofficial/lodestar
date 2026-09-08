@@ -1070,3 +1070,35 @@ func FuzzPostEnvelope(f *testing.F) {
 		}
 	})
 }
+
+// TestCORSPreflight: browser/web tools must be able to call every method
+// the API uses — in particular PUT /devices/push — or the preflight fails
+// and push-token sync from a web client silently dies.
+func TestCORSPreflight(t *testing.T) {
+	s, _ := newTestServer(t)
+	httpSrv := httptest.NewServer(s.Handler())
+	defer httpSrv.Close()
+
+	req, err := http.NewRequest(http.MethodOptions, httpSrv.URL+"/api/v1/devices/push", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Access-Control-Request-Method", "PUT")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", resp.StatusCode)
+	}
+	methods := resp.Header.Get("Access-Control-Allow-Methods")
+	if !strings.Contains(methods, "PUT") {
+		t.Errorf("allow-methods = %q, missing PUT (web clients cannot sync push tokens)", methods)
+	}
+	for _, m := range []string{"GET", "POST", "DELETE"} {
+		if !strings.Contains(methods, m) {
+			t.Errorf("allow-methods = %q, missing %s", methods, m)
+		}
+	}
+}

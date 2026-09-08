@@ -301,21 +301,37 @@ func jwtEncode(header, claims map[string]any, key *ecdsa.PrivateKey) (string, er
 // Multi sends to every configured provider.
 type Multi struct {
 	senders []Sender
+	hasNtfy bool
+	hasAPNs bool
 }
 
 // NewMulti collects senders; empty provider lists are fine (disabled).
 func NewMulti(senders ...Sender) *Multi {
-	var active []Sender
+	m := &Multi{}
 	for _, s := range senders {
-		if s != nil {
-			active = append(active, s)
+		if s == nil {
+			continue
+		}
+		m.senders = append(m.senders, s)
+		switch s.(type) {
+		case *Ntfy:
+			m.hasNtfy = true
+		case *APNs:
+			m.hasAPNs = true
 		}
 	}
-	return &Multi{senders: active}
+	return m
 }
 
 // Enabled reports whether any provider is configured.
 func (m *Multi) Enabled() bool { return len(m.senders) > 0 }
+
+// NtfyEnabled reports whether an ntfy provider is configured (admin stats
+// must not claim APNs is live just because ntfy is, or vice versa).
+func (m *Multi) NtfyEnabled() bool { return m.hasNtfy }
+
+// APNsEnabled reports whether an APNs provider is configured.
+func (m *Multi) APNsEnabled() bool { return m.hasAPNs }
 
 // Send delivers to all providers, logging but not failing on individual errors.
 func (m *Multi) Send(ctx context.Context, req Request) error {
