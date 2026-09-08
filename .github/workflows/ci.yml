@@ -95,8 +95,8 @@ jobs:
       # `flutter build ios --no-codesign` compiles the iOS archive on Linux
       # without a simulator or signing identity — it validates iOS plugin
       # linkage and the Dart build path for iOS. No simulator needed.
-      - name: Build iOS archive (no codesign)
-        run: flutter build ios --release --no-codesign
+      - name: Build iOS archive (no codesign, verbose)
+        run: flutter build ios --release --no-codesign --verbose 2>&1 | tail -40
       - name: Test
         run: flutter test
 
@@ -108,7 +108,7 @@ jobs:
         working-directory: apps/lodestar
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-ruby@v3
+      - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
           bundler-cache: true
