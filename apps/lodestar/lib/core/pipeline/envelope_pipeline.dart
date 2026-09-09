@@ -65,7 +65,13 @@ class EnvelopePipeline {
     required CryptoService crypto,
     required Future<void> Function(Envelope envelope) persist,
     required CircleMember? Function(String circleId, String deviceId) memberOf,
-    required void Function(String circleId, Map<String, dynamic> open)
+    // envelopeId is the server-assigned id (NOT in the signed plaintext):
+    // the UI uses it for exact (ts, id) catch-up cursors.
+    required void Function(
+      String circleId,
+      Map<String, dynamic> open,
+      String envelopeId,
+    )
     dispatch,
   }) : _crypto = crypto,
        _persist = persist,
@@ -75,7 +81,8 @@ class EnvelopePipeline {
   final CryptoService _crypto;
   final Future<void> Function(Envelope envelope) _persist;
   final CircleMember? Function(String circleId, String deviceId) _memberOf;
-  final void Function(String circleId, Map<String, dynamic> open) _dispatch;
+  final void Function(String circleId, Map<String, dynamic> open, String envelopeId)
+  _dispatch;
 
   /// Envelope ids already processed (replay protection). Insertion-ordered
   /// so eviction drops the oldest.
@@ -143,7 +150,7 @@ class EnvelopePipeline {
       if (isStaleAlert(kind, ts, DateTime.now().millisecondsSinceEpoch)) {
         return;
       }
-      _dispatch(env.circleId, open);
+      _dispatch(env.circleId, open, env.id);
     } catch (_) {
       // Tampered or not decryptable with current key — ignore.
     }

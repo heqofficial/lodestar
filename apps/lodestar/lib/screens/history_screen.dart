@@ -52,28 +52,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final track = <LatLng>[];
       if (sender != null) {
         // The server caps pages at 1000 envelopes; page backwards in time
-        // (oldest page first) until we reach the start of the day.
-        // The server cursor is exclusive on ts, so rows sharing the page
-        // boundary's ts would be skipped forever: step back 1ms and dedupe
-        // by envelope id instead.
-        var since = 0;
-        final seen = <String>{};
+        // until we reach the start of the day. The (ts, id) cursor resumes
+        // exactly at the oldest row of the previous page, so rows sharing
+        // a page boundary's millisecond are neither skipped nor re-fetched.
+        var before = 0;
+        var beforeId = '';
         while (true) {
           final envs = await state.api.getEnvelopes(
             circleId,
-            since: since,
+            before: before,
+            beforeId: beforeId,
             kind: 'location',
             device: member,
             limit: 1000,
           );
           if (envs.isEmpty) break;
-          // Server returns newest first; pageOldest drives the next cursor.
-          var pageOldest = envs.first.ts;
+          // Server returns newest first; the last row drives the next cursor.
           for (final e in envs) {
-            if (e.ts < pageOldest) pageOldest = e.ts;
-            if (!seen.add(e.id) || e.ts < dayStart || e.ts >= dayEnd) {
-              continue;
-            }
+            if (e.ts < dayStart || e.ts >= dayEnd) continue;
             final open = await state.crypto.openEnvelope(
               circleId: circleId,
               nonceB64: e.nonce,
@@ -88,8 +84,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ),
             );
           }
-          if (envs.length < 1000 || pageOldest <= dayStart) break;
-          since = pageOldest - 1;
+          final last = envs.last;
+          if (envs.length < 1000 || last.ts <= dayStart) break;
+          before = last.ts;
+          beforeId = last.id;
         }
       }
       setState(() {

@@ -43,24 +43,21 @@ class _TripsScreenState extends State<TripsScreen> {
           .firstOrNull;
       final out = <TripSummary>[];
       if (sender != null) {
-        // Same tie-safe paging as HistoryScreen: the server cursor is
-        // exclusive on ts, so step back 1ms and dedupe by envelope id to
-        // avoid skipping rows that share the page boundary's ts.
-        var since = 0;
-        final seen = <String>{};
+        // Page through all trips newest-first; the composite (ts, id)
+        // cursor resumes exactly at the oldest row of the previous page.
+        var before = 0;
+        var beforeId = '';
         while (true) {
           final envs = await state.api.getEnvelopes(
             circleId,
-            since: since,
+            before: before,
+            beforeId: beforeId,
             kind: 'trip',
             device: member,
             limit: 1000,
           );
           if (envs.isEmpty) break;
-          var pageOldest = envs.first.ts;
           for (final e in envs) {
-            if (e.ts < pageOldest) pageOldest = e.ts;
-            if (!seen.add(e.id)) continue;
             final open = await state.crypto.openEnvelope(
               circleId: circleId,
               nonceB64: e.nonce,
@@ -69,8 +66,10 @@ class _TripsScreenState extends State<TripsScreen> {
             );
             out.add(TripSummary.fromData(open['data'] as Map<String, dynamic>));
           }
+          final last = envs.last;
           if (envs.length < 1000) break;
-          since = pageOldest - 1;
+          before = last.ts;
+          beforeId = last.id;
         }
       }
       out.sort((a, b) => b.endTs.compareTo(a.endTs));

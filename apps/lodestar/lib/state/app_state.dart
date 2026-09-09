@@ -91,7 +91,10 @@ class AppState extends ChangeNotifier {
 
   /// Newest chat message ts per circle — cursor for catch-up after a socket
   /// drop (reconnect would otherwise lose messages relayed while offline).
-  final Map<String, int> _lastChatTsByCircle = {};
+  /// Last chat message seen per circle, as a (ts, envelope id) pair: the
+  /// id tiebreak lets reconnect catch-up resume at the exact point instead
+  /// of re-fetching (and deduping) the page boundary.
+  final Map<String, ({int ts, String id})> _lastChatByCircle = {};
 
   ApiClient get api {
     final a = _api;
@@ -555,7 +558,7 @@ class AppState extends ChangeNotifier {
     return false;
   }
 
-  void _dispatch(String circleId, Map<String, dynamic> open) {
+  void _dispatch(String circleId, Map<String, dynamic> open, String envId) {
     final data = (open['data'] as Map<String, dynamic>? ?? {});
     final kind = open['kind'] as String? ?? '';
     final sender = open['sender'] as String? ?? '';
@@ -578,10 +581,12 @@ class AppState extends ChangeNotifier {
         if (list.length > 500) {
           list.removeRange(0, list.length - 500);
         }
-        _lastChatTsByCircle[circleId] = max(
-          _lastChatTsByCircle[circleId] ?? 0,
-          ts,
-        );
+        final cur = _lastChatByCircle[circleId];
+        if (cur == null ||
+            ts > cur.ts ||
+            (ts == cur.ts && envId.compareTo(cur.id) > 0)) {
+          _lastChatByCircle[circleId] = (ts: ts, id: envId);
+        }
       case 'checkin':
         events.insert(0, (
           deviceId: sender,
@@ -665,12 +670,14 @@ class AppState extends ChangeNotifier {
       if (env.circleId == circleId) await _ingest(env);
     }
     // Chat is not part of "latest per device": pull any messages
-    // relayed while we were disconnected.
-    final since = (_lastChatTsByCircle[circleId] ?? 0) - 1;
-    if (since >= 0) {
+    // relayed while we were disconnected, resuming at the exact (ts, id)
+    // of the last one we processed.
+    final last = _lastChatByCircle[circleId];
+    if (last != null) {
       final msgs = await api.getEnvelopes(
         circleId,
-        since: since,
+        since: last.ts,
+        sinceId: last.id,
         kind: 'message',
         limit: 500,
       );

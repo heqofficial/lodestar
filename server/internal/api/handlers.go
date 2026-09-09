@@ -405,9 +405,20 @@ func (s *Server) handleGetEnvelopes(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	kind := q.Get("kind")
-	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
 	device := q.Get("device")
-	envs, err := s.store.Envelopes(circleID, since, kind, device, limit)
+	// Composite (ts, id) cursors: the id tiebreak makes same-millisecond
+	// paging exact (see store.EnvelopeCursor). since = newer-than for
+	// catch-up; before = older-than for backward paging.
+	sinceTS, _ := strconv.ParseInt(q.Get("since"), 10, 64)
+	beforeTS, _ := strconv.ParseInt(q.Get("before"), 10, 64)
+	envs, err := s.store.Envelopes(
+		circleID,
+		store.EnvelopeCursor{TS: sinceTS, ID: q.Get("since_id")},
+		store.EnvelopeCursor{TS: beforeTS, ID: q.Get("before_id")},
+		kind,
+		device,
+		limit,
+	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "query failed")
 		return

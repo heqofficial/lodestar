@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1224,5 +1225,70 @@ func TestDeleteSelfRevokesEverything(t *testing.T) {
 	var msg map[string]any
 	if err := wsjson.Read(ctx, conn, &msg); err != nil {
 		t.Errorf("bob socket died after alice's self-delete: %v", err)
+	}
+}
+
+// TestEnvelopeCompositeCursor pages same-millisecond envelopes through the
+// HTTP API: the (ts, id) cursor must return every row exactly once in the
+// canonical (ts DESC, id DESC) order — a ts-only cursor would skip or
+// re-fetch rows at the page boundary.
+func TestEnvelopeCompositeCursor(t *testing.T) {
+	s, _ := newTestServer(t)
+	_, tok := register(t, s, "Alice")
+	circleID := createCircle(t, s, tok, "Family")
+
+	ts := time.Now().UnixMilli()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		resp, out := doJSON(t, s, "POST", "/api/v1/circles/"+circleID+"/envelopes", tok, map[string]any{
+			"kind": "location", "ts": ts,
+			"nonce": fmt.Sprintf("n-%d", i), "ciphertext": "c2lnaHQ=",
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("post %d: status %d", i, resp.StatusCode)
+		}
+		ids = append(ids, out["id"].(string))
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(ids))) // ts DESC, id DESC
+
+	// Page backward one row at a time; the cursor must resume exactly at
+	// the previous page's last row.
+	var got []string
+	before, beforeID := 0, ""
+	for i := 0; i < 5; i++ {
+		path := fmt.Sprintf("/api/v1/circles/%s/envelopes?limit=1", circleID)
+		if before > 0 {
+			path += fmt.Sprintf("&before=%d&before_id=%s", before, beforeID)
+		}
+		resp, out := doJSON(t, s, "GET", path, tok, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("page %d: status %d", i, resp.StatusCode)
+		}
+		envs, _ := out["envelopes"].([]any)
+		if len(envs) == 0 {
+			break
+		}
+		env := envs[0].(map[string]any)
+		got = append(got, env["id"].(string))
+		before = int(env["ts"].(float64))
+		beforeID = env["id"].(string)
+	}
+	if len(got) != len(ids) {
+		t.Fatalf("paged %v, want all of %v", got, ids)
+	}
+	for i := range ids {
+		if got[i] != ids[i] {
+			t.Fatalf("page %d = %s, want %s (full: %v)", i, got[i], ids[i], got)
+		}
+	}
+
+	// Forward catch-up: nothing is newer than the newest envelope.
+	resp, out := doJSON(t, s, "GET", fmt.Sprintf(
+		"/api/v1/circles/%s/envelopes?since=%d&since_id=%s", circleID, ts, ids[0]), tok, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("since query: status %d", resp.StatusCode)
+	}
+	if envs, _ := out["envelopes"].([]any); len(envs) != 0 {
+		t.Errorf("since cursor returned %d rows, want 0", len(envs))
 	}
 }

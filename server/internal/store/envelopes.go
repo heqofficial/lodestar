@@ -87,9 +87,21 @@ func (s *Store) PruneEnvelopes(beforeMS int64) (int64, error) {
 	return n, nil
 }
 
+// EnvelopeCursor is an exclusive cursor on the same total order envelopes
+// are returned (ts DESC, id DESC). The id tiebreak makes same-millisecond
+// paging exact: a ts-only cursor skips (or, with the client's -1 bodge,
+// re-fetches) rows sharing the page boundary's ts. An empty ID falls back
+// to ts-only for backward compatibility.
+type EnvelopeCursor struct {
+	TS int64
+	ID string
+}
+
 // Envelopes fetches envelopes for a circle, newest first, with optional
-// kind and device filters and a "since" cursor (exclusive).
-func (s *Store) Envelopes(circleID string, sinceTS int64, kind, deviceID string, limit int) ([]Envelope, error) {
+// kind and device filters and exclusive cursors: since is the lower bound
+// ("newer than", used for catch-up) and before is the upper bound
+// ("older than", used for backward paging). At most one is set.
+func (s *Store) Envelopes(circleID string, since, before EnvelopeCursor, kind, deviceID string, limit int) ([]Envelope, error) {
 	if limit > 1000 {
 		limit = 1000
 	}
@@ -99,9 +111,23 @@ func (s *Store) Envelopes(circleID string, sinceTS int64, kind, deviceID string,
 	q := `SELECT id, circle_id, device_id, kind, ts, nonce, ciphertext, created_at
 		FROM envelopes WHERE circle_id = ?`
 	args := []any{circleID}
-	if sinceTS > 0 {
-		q += ` AND ts > ?`
-		args = append(args, sinceTS)
+	if since.TS > 0 {
+		if since.ID != "" {
+			q += ` AND (ts > ? OR (ts = ? AND id > ?))`
+			args = append(args, since.TS, since.TS, since.ID)
+		} else {
+			q += ` AND ts > ?`
+			args = append(args, since.TS)
+		}
+	}
+	if before.TS > 0 {
+		if before.ID != "" {
+			q += ` AND (ts < ? OR (ts = ? AND id < ?))`
+			args = append(args, before.TS, before.TS, before.ID)
+		} else {
+			q += ` AND ts < ?`
+			args = append(args, before.TS)
+		}
 	}
 	if kind != "" {
 		q += ` AND kind = ?`
@@ -111,7 +137,7 @@ func (s *Store) Envelopes(circleID string, sinceTS int64, kind, deviceID string,
 		q += ` AND device_id = ?`
 		args = append(args, deviceID)
 	}
-	q += ` ORDER BY ts DESC LIMIT ?`
+	q += ` ORDER BY ts DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := s.db.Query(q, args...)

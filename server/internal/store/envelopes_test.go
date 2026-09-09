@@ -35,7 +35,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		}
 	}
 	// limit > 1000 is clamped to 1000, not to 100.
-	envs, err := s.Envelopes("c1", 0, "", "", 5000)
+	envs, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "", "", 5000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		t.Errorf("got %d envelopes, want 105 (limit must not shrink results below stored count)", len(envs))
 	}
 	// Explicit small limit works.
-	envs, err = s.Envelopes("c1", 0, "", "", 5)
+	envs, err = s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "", "", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestEnvelopeLimitClamp(t *testing.T) {
 		t.Errorf("got %d envelopes, want 5", len(envs))
 	}
 	// since cursor excludes entries at or before the cursor (strict >).
-	envs, err = s.Envelopes("c1", 1050, "", "", 0)
+	envs, err = s.Envelopes("c1", EnvelopeCursor{TS: 1050}, EnvelopeCursor{}, "", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestEnvelopeDedup(t *testing.T) {
 	if stored.ID != "e1" {
 		t.Errorf("duplicate returned id %q, want the stored id \"e1\"", stored.ID)
 	}
-	envs, err := s.Envelopes("c1", 0, "", "", 10)
+	envs, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestPruneRetention(t *testing.T) {
 	if n != 2 {
 		t.Errorf("pruned %d, want 2 (location+message; sos/crash kept)", n)
 	}
-	left, err := s.Envelopes("c1", 0, "", "", 10)
+	left, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	if _, _, err := s.AddEnvelope(want); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Envelopes("c1", 0, "message", "", 10)
+	got, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "message", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestEnvelopeDeviceFilter(t *testing.T) {
 			}
 		}
 	}
-	envs, err := s.Envelopes("c1", 0, "", "d2", 10)
+	envs, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{}, "", "d2", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,5 +351,62 @@ func TestAddMemberCap(t *testing.T) {
 	// Existing members may still re-join (idempotent).
 	if err := s.AddMember("c1", "da00", ""); err != nil {
 		t.Errorf("rejoin at cap: %v", err)
+	}
+}
+
+// TestEnvelopeCursorSameTS pages through envelopes that share one timestamp:
+// the composite (ts, id) cursor must return every row exactly once — a
+// ts-only cursor would skip or duplicate rows at the page boundary.
+func TestEnvelopeCursorSameTS(t *testing.T) {
+	s := openTestStore(t)
+	// Four envelopes at the same ms, ids chosen so ordering is non-trivial.
+	ids := []string{"b000", "a000", "d000", "c000"}
+	for _, id := range ids {
+		if _, inserted, err := s.AddEnvelope(Envelope{
+			ID: id, CircleID: "c1", DeviceID: "d1", Kind: "location",
+			TS: 1000, Nonce: "n-" + id, Ciphertext: "c",
+		}); err != nil || !inserted {
+			t.Fatalf("insert %s: inserted=%v err=%v", id, inserted, err)
+		}
+	}
+	// Page size 1, newest first: ts DESC, id DESC.
+	wantOrder := []string{"d000", "c000", "b000", "a000"}
+	var got []string
+	cursor := EnvelopeCursor{}
+	for i := 0; i < 5; i++ {
+		envs, err := s.Envelopes("c1", EnvelopeCursor{}, cursor, "", "", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(envs) == 0 {
+			break
+		}
+		got = append(got, envs[0].ID)
+		cursor = EnvelopeCursor{TS: envs[0].TS, ID: envs[0].ID}
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("paged %v, want %v", got, wantOrder)
+	}
+	for i := range wantOrder {
+		if got[i] != wantOrder[i] {
+			t.Fatalf("page %d = %s, want %s (full: %v)", i, got[i], wantOrder[i], got)
+		}
+	}
+	// And no extra rows after the last one.
+	envs, err := s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{TS: 1000, ID: "a000"}, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 0 {
+		t.Errorf("after last cursor got %d rows, want 0", len(envs))
+	}
+	// A ts-only cursor at the boundary ts is inclusive of the boundary
+	// (ts > 1000 is empty), so clients keep using the composite form.
+	envs, err = s.Envelopes("c1", EnvelopeCursor{}, EnvelopeCursor{TS: 1000}, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 0 {
+		t.Errorf("ts-only cursor at boundary ts: got %d rows, want 0", len(envs))
 	}
 }

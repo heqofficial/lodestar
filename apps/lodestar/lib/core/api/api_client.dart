@@ -183,9 +183,16 @@ class ApiClient {
     return Envelope.fromJson(j);
   }
 
+  /// Fetches envelopes, newest first. Cursors are exclusive and composite:
+  /// [since]/[sinceId] resume forward (newer than), [before]/[beforeId]
+  /// page backward (older than) — the id tiebreak keeps same-millisecond
+  /// paging exact.
   Future<List<Envelope>> getEnvelopes(
     String circleId, {
     int since = 0,
+    String sinceId = '',
+    int before = 0,
+    String beforeId = '',
     String? kind,
     String? device,
     int limit = 200,
@@ -193,7 +200,15 @@ class ApiClient {
     final j = await _send(
       'GET',
       '/api/v1/circles/$circleId/envelopes',
-      query: {'since': '$since', 'kind': ?kind, 'device': ?device, 'limit': '$limit'},
+      query: {
+        'limit': '$limit',
+        'kind': ?kind,
+        'device': ?device,
+        if (since > 0) 'since': '$since',
+        if (sinceId.isNotEmpty) 'since_id': sinceId,
+        if (before > 0) 'before': '$before',
+        if (beforeId.isNotEmpty) 'before_id': beforeId,
+      },
     );
     return (j['envelopes'] as List<dynamic>)
         .map((e) => Envelope.fromJson(e as Map<String, dynamic>))
