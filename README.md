@@ -17,12 +17,6 @@ Life360 has been caught selling precise family location data to a dozen data bro
 
 ## Feature set
 
-**Implemented:**
-**Hardened server (v0.3):** panic recovery (one bad request can't kill the server), per-device + per-kind rate limiting, exact-duplicate/replay rejection, key-blob integrity checks, immediate socket revocation on member removal, 90-day retention pruning, constant-time admin auth. See [docs/threat-model.md](docs/threat-model.md).
-
-## Feature set
-
-**Implemented:**
 - Circles (invite by code) with member avatars and colors
 - Live family map (OpenStreetMap, no paid API keys)
 - Adaptive background tracking with motion-aware intervals
@@ -31,11 +25,15 @@ Life360 has been caught selling precise family location data to a dozen data bro
 - Location history timeline (decrypted on-device only)
 - Circle chat (E2E encrypted)
 - One-tap check-ins and SOS broadcast
+- **SOS you can't lose** — an unsent SOS is persisted to disk and delivered on next launch, even if the app is killed while offline.
 - **Driving reports** — encrypted end-of-drive summaries: distance, duration, top/avg speed, speeding episodes (≥5 s over your threshold), hard braking (≥2.5 m/s²). Free forever — Life360 paywalls this.
 - **Crash alerting** — on-device impact detection (accelerometer jolt or GPS speed-drop) confirmed by the vehicle stopping, then an encrypted crash alert to the circle (pushes even if sharing is paused — it's an emergency).
 - Per-member sharing controls (pause, battery mode, speeding threshold)
+- **Sign out / revoke this device** — one tap wipes local keys and revokes the server token instantly.
 - Self-hosted push via [ntfy](https://ntfy.sh) (optional; crash + SOS alert by default)
 - Minimal web dashboard (server status, no locations)
+
+**Hardened server:** panic recovery (one bad request can't kill the server), per-device + per-kind rate limiting, exact-duplicate/replay rejection, key-blob integrity checks, immediate socket revocation on member removal, 90-day retention pruning, constant-time admin auth, versioned `/healthz`. See [docs/threat-model.md](docs/threat-model.md).
 
 **Roadmap:** Home Assistant add-on, wearables, multi-language, public instance, pet circles.
 
