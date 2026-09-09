@@ -23,6 +23,18 @@ jobs:
         run: go test -race ./...
       - name: E2E (real binary)
         run: go test -count=1 -v ./e2e/
+      # Coverage floors: regressions in the security-critical paths must
+      # fail CI. Thresholds sit just below today's numbers (api 80.7%,
+      # store 66.6%) so they gate on new regressions, not current code.
+      - name: Coverage floor (api >= 75%, store >= 60%)
+        run: |
+          set -e
+          go test -coverprofile=/tmp/cover.out ./internal/api/
+          go tool cover -func=/tmp/cover.out | awk '/^total:/ { if ($3+0 < 75) { print "FAIL: api coverage " $3 " < 75%"; exit 1 } }'
+          go test -coverprofile=/tmp/cover.out ./internal/store/
+          go tool cover -func=/tmp/cover.out | awk '/^total:/ { if ($3+0 < 60) { print "FAIL: store coverage " $3 " < 60%"; exit 1 } }'
+      - name: Ingest benchmark smoke
+        run: go test -run '^$' -bench BenchmarkAddEnvelope -benchtime=200x ./internal/store/
 
   app:
     name: App (flutter analyze + test)
@@ -42,6 +54,18 @@ jobs:
         run: flutter analyze
       - name: Test
         run: flutter test
+      # Coverage floor: gates on new regressions (today: 34.8%). Parses
+      # lcov.info with awk — no extra tools on the runner.
+      - name: Coverage floor (dart >= 30%)
+        run: |
+          flutter test --coverage
+          awk '/^LF:/ { found += substr($0, 4) }
+               /^LH:/ { hit += substr($0, 4) }
+               END {
+                 pct = (found > 0) ? 100.0 * hit / found : 100;
+                 printf "Dart line coverage: %.1f%% (%d/%d lines)\n", pct, hit, found;
+                 if (pct < 30) { print "FAIL: dart coverage < 30%"; exit 1 }
+               }' coverage/lcov.info
 
   android:
     name: Android (release APK)
