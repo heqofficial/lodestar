@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,22 @@ func pushTitle(kind, from string) string {
 	}
 }
 
+// Version is the build version, injected at link time via
+// -ldflags "-X github.com/heqofficial/lodestar/server/internal/api.Version=…"
+// and reported by /healthz so deployments can verify what they run.
+var Version = "dev"
+
+// validPubKey reports whether s is canonical base64 of a 32-byte public
+// key (Ed25519 and X25519 keys are both 32 bytes). Without this check a
+// client could register any string and brick every later key exchange.
+func validPubKey(s string) bool {
+	if len(s) != 44 { // canonical base64 of 32 bytes is always 44 chars
+		return false
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(s)
+	return err == nil && len(raw) == 32
+}
+
 func randID(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -72,7 +89,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "db unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": Version})
 }
 
 func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +157,7 @@ func (s *Server) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = "My Device"
 	}
-	if len(req.Name) > maxNameLen || req.Ed25519Pub == "" || req.X25519Pub == "" || len(req.APNsToken) > maxPushTokenLen {
+	if len(req.Name) > maxNameLen || !validPubKey(req.Ed25519Pub) || !validPubKey(req.X25519Pub) || len(req.APNsToken) > maxPushTokenLen {
 		writeErr(w, http.StatusBadRequest, "invalid fields")
 		return
 	}

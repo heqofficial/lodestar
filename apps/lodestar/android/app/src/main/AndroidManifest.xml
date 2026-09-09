@@ -18,9 +18,10 @@
         android:label="Lodestar"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
-        <!-- usesCleartextTraffic allows plain-HTTP self-hosted servers on your LAN.
-             Prefer HTTPS or a Tailscale tunnel in production (see docs/deployment.md). -->
+        android:networkSecurityConfig="@xml/network_security_config">
+        <!-- Cleartext policy lives in res/xml/network_security_config.xml:
+             plain-HTTP self-hosted servers on your LAN are allowed, HTTPS is
+             used whenever the configured server URL is https://. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

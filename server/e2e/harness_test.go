@@ -34,6 +34,10 @@ import (
 // binPath is the compiled server binary, built once in TestMain.
 var binPath string
 
+// testPubKey is canonical base64 of 32 zero bytes — a structurally valid
+// Ed25519/X25519 public key for registration fixtures.
+const testPubKey = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+
 func TestMain(m *testing.M) {
 	// Build into the package dir, not the OS temp dir: Windows Application
 	// Control policies commonly block executing binaries from %%TEMP%%.
@@ -323,7 +327,7 @@ func (c *client) register(name string) (device, string) {
 		Token  string `json:"token"`
 	}
 	c.decode("POST", "/api/v1/devices", map[string]string{
-		"name": name, "ed25519_pub": "ed-" + name, "x25519_pub": "x-" + name,
+		"name": name, "ed25519_pub": testPubKey, "x25519_pub": testPubKey,
 	}, http.StatusCreated, &out)
 	if out.Token == "" {
 		c.t.Fatal("register returned an empty token")

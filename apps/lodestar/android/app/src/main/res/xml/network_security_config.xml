@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Explicit cleartext policy (replaces the app-wide usesCleartextTraffic flag).
+
+  Cleartext is intentionally permitted: Lodestar is self-hosted, and a family
+  server is commonly plain HTTP on a LAN (192.168.x.x) or a Tailscale tailnet.
+  HTTPS is used automatically whenever the configured server URL starts with
+  https:// — Android's cleartext policy only affects http:// hosts.
+
+  Keep this scoped: do NOT add permissive trust anchors here. Only the
+  system CA store is trusted, so a MITM proxy still needs a device-installed
+  CA.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

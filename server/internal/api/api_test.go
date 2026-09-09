@@ -54,12 +54,16 @@ func doJSON(t testing.TB, s *Server, method, path, token string, body any) (*htt
 	return resp, out
 }
 
+// testPubKey is canonical base64 of 32 zero bytes — a structurally valid
+// Ed25519/X25519 public key for registration fixtures.
+const testPubKey = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+
 func register(t testing.TB, s *Server, name string) (deviceID, token string) {
 	t.Helper()
 	resp, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
 		"name":        name,
-		"ed25519_pub": "edpub-" + name,
-		"x25519_pub":  "xpub-" + name,
+		"ed25519_pub": testPubKey,
+		"x25519_pub":  testPubKey,
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register %s: status %d", name, resp.StatusCode)
@@ -321,6 +325,17 @@ func TestAdminPageAndHealthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("healthz: %d", rec.Code)
 	}
+	// The version must be reported so deployments can verify the build.
+	var health struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&health); err != nil {
+		t.Fatalf("decode healthz: %v", err)
+	}
+	if health.Status != "ok" || health.Version == "" {
+		t.Errorf("healthz = %+v, want status ok + non-empty version", health)
+	}
 
 	req = httptest.NewRequest("GET", "/admin", nil)
 	rec = httptest.NewRecorder()
@@ -357,7 +372,7 @@ func TestRegisterRateLimit(t *testing.T) {
 	limited := false
 	for i := 0; i < 20; i++ {
 		resp, _ := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
-			"name": "Spam", "ed25519_pub": "e", "x25519_pub": "x",
+			"name": "Spam", "ed25519_pub": testPubKey, "x25519_pub": testPubKey,
 		})
 		if resp.StatusCode == http.StatusTooManyRequests {
 			limited = true
@@ -663,7 +678,7 @@ func TestCrashPushTitle(t *testing.T) {
 func TestRegisterStoresAPNsToken(t *testing.T) {
 	s, st := newTestServer(t)
 	resp, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
-		"name": "Alice", "ed25519_pub": "e", "x25519_pub": "x", "apns_token": "tok-alice",
+		"name": "Alice", "ed25519_pub": testPubKey, "x25519_pub": testPubKey, "apns_token": "tok-alice",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("register: %d", resp.StatusCode)
@@ -861,7 +876,7 @@ func TestAPNsUnregisteredClearsToken(t *testing.T) {
 func TestRegisterSanitizesControlChars(t *testing.T) {
 	s, _ := newTestServer(t)
 	_, out := doJSON(t, s, "POST", "/api/v1/devices", "", map[string]any{
-		"name": "Bad\nName\tDevice\r", "ed25519_pub": "e", "x25519_pub": "x",
+		"name": "Bad\nName\tDevice\r", "ed25519_pub": testPubKey, "x25519_pub": testPubKey,
 	})
 	if out["device"] == nil {
 		t.Fatal("registration failed")
@@ -1290,5 +1305,31 @@ func TestEnvelopeCompositeCursor(t *testing.T) {
 	}
 	if envs, _ := out["envelopes"].([]any); len(envs) != 0 {
 		t.Errorf("since cursor returned %d rows, want 0", len(envs))
+	}
+}
+
+// TestRegisterValidatesPubKeys: registration must reject anything that is
+// not canonical base64 of a 32-byte public key, or the key exchange is
+// bricked later.
+func TestRegisterValidatesPubKeys(t *testing.T) {
+	s, _ := newTestServer(t)
+	ok := map[string]any{
+		"name": "Alice", "ed25519_pub": testPubKey, "x25519_pub": testPubKey,
+	}
+	// Valid both keys → 201.
+	if resp, _ := doJSON(t, s, "POST", "/api/v1/devices", "", ok); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("valid keys: status %d, want 201", resp.StatusCode)
+	}
+	cases := map[string]map[string]any{
+		"garbage ed25519": {"name": "A", "ed25519_pub": "not-a-key", "x25519_pub": testPubKey},
+		"garbage x25519":  {"name": "A", "ed25519_pub": testPubKey, "x25519_pub": "x"},
+		"short key":       {"name": "A", "ed25519_pub": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMA==", "x25519_pub": testPubKey},
+		"missing":         {"name": "A", "x25519_pub": testPubKey},
+		"empty":           {"name": "A", "ed25519_pub": "", "x25519_pub": testPubKey},
+	}
+	for label, body := range cases {
+		if resp, _ := doJSON(t, s, "POST", "/api/v1/devices", "", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", label, resp.StatusCode)
+		}
 	}
 }

@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        # Baked into the binary and reported by /healthz.
+        LODESTAR_VERSION: ${LODESTAR_VERSION:-dev}
     image: lodestar:local
     container_name: lodestar
     restart: unless-stopped

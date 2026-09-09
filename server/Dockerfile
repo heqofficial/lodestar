@@ -5,8 +5,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY server/ ./server/
-# Static, CGO-free binary for any linux arch.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/lodestard ./server/cmd/lodestard
+# Static, CGO-free binary for any linux arch. LODESTAR_VERSION is baked
+# into the binary and reported by /healthz (defaults to "dev").
+ARG LODESTAR_VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+  -ldflags="-s -w -X github.com/heqofficial/lodestar/server/internal/api.Version=${LODESTAR_VERSION}" \
+  -o /out/lodestard ./server/cmd/lodestard
 
 # Runtime stage
 FROM alpine:3.21
